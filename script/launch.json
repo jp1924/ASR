@@ -1,0 +1,32 @@
+// ------------------------------ for vscode user ------------------------------
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: run_T5_main",
+            "type": "python",
+            "request": "launch",
+            "program": "", // --check
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--model_name_or_path=", // --check
+                "--data_name_or_script=", // --check
+                "--output_dir=", // --check
+                "--cache=", // --check
+                "--learning_rate=1e-5", // --check
+                "--per_device_train_batch_size=10",
+                "--per_device_eval_batch_size=4",
+                "--num_train_epochs=2",
+                "--gradient_accumulation_steps=2",
+                "--eval_accumulation_steps=2",
+                "--lr_scheduler_type=linear",
+                "--warmup_steps=1000",
+                "--logging_strategy=steps",
+                "--logging_steps=1",
+                "--evaluation_strategy=steps",
+                "--eval_steps=5000",
+            ]
+        }
+    ]
+}
