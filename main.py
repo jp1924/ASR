@@ -17,20 +17,15 @@ from utils.argument import DataArgument, ModelArgument
 
 
 def main(parser: HfArgumentParser) -> None:
-
     train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
 
-    cache = r"/data/jsb193/github/t5/.cache"
-    model_name_or_path = "KETI-AIR/ke-t5-base"
-    data_script_or_path = ""
-
-    tokenizer = T5TokenizerFast.from_pretrained(model_args.name_or_path, cache_dir=model_args.cache)
-    config = T5Config.from_pretrained(model_args.name_or_path, cache_dir=model_args.cache)
+    tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
+    config = T5Config.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
     model = T5ForConditionalGeneration.from_pretrained(
-        model_args.name_or_path, config=config, cache_dir=model_args.cache
+        model_args.model_name_or_path, config=config, cache_dir=model_args.cache
     )
 
-    train_data = load_dataset(data_args.name_or_script, cache_dir=model_args.cache)
+    train_data = load_dataset(data_args.data_name_or_script, cache_dir=model_args.cache)
     # [NOTE]: 아마 학습용 데이터는 기본 sentence, label과 같은 구성으로 되어 있을 가능성이 높다.
 
     # [임시]: splited_data = train_data.train_test_split(0.2)
@@ -109,9 +104,10 @@ def predict(trainer: Trainer) -> None:
 
 
 def set_task(task_name) -> str:
+    return
 
 
-if "__main__" == __name__:
+if __name__ == "__main__":
     # [NOTE]: check wandb env variable
     # -> 환경 변수를 이용해 상세한 조작이 가능함.
     # https://docs.wandb.ai/guides/track/advanced/environment-variables
@@ -122,4 +118,4 @@ if "__main__" == __name__:
 
     # os.environ("WANDB .... ") = process_name
 
-    main()
+    main(parser)
