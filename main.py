@@ -6,7 +6,7 @@ from transformers import (
     HfArgumentParser,
     T5Config,
     T5ForConditionalGeneration,
-    T5TokenizerFast,
+    T5Tokenizer,
     Trainer,
     TrainingArguments,
 )
@@ -20,16 +20,16 @@ from utils import DataArgument, ModelArgument
 def main(parser: HfArgumentParser) -> None:
     train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
 
-    tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
+    tokenizer = T5Tokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
     config = T5Config.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
     model = T5ForConditionalGeneration.from_pretrained(
         model_args.model_name_or_path, config=config, cache_dir=model_args.cache
     )
 
-    train_data = load_dataset("csv", data_files=data_args.data_name_or_script, cache_dir=model_args.cache)
-    # [NOTE]: 아마 학습 데이터는 기본 sentence, label과 같은 구성으로 되어 있을 가능성이 높다.
-
-    # [임시]: splited_data = train_data["train"].train_test_split(0.2) # 만에 하나 train데이터만 있는 경우 ---------------------------- **데이터가 하나만 있는 경우**
+    loaded_data = load_dataset(
+        "csv", data_files=data_args.data_name_or_script, cache_dir=model_args.cache, split="train"
+    )
+    # [NOTE]: 아마 학습 데이터는 sentence, label로 되어 있을 가능성이 높음.
 
     def preprocess(input_values: Dataset) -> dict:
         """
@@ -56,7 +56,11 @@ def main(parser: HfArgumentParser) -> None:
 
         return result
 
-    train_data = train_data.map(preprocess, num_proc=10)
+    desc_name = "T5_preprocess"
+    loaded_data = loaded_data.map(preprocess, num_proc=data_args.num_proc, desc=desc_name)
+    splited_data = loaded_data.train_test_split(0.1)
+    train_data = splited_data["train"]
+    valid_data = splited_data["test"]
 
     collator = T5Collator(tokenizer=tokenizer)
     callbacks = [WandbCallback] if os.getenv("WANDB_DISABLED") == "false" else None
@@ -65,9 +69,9 @@ def main(parser: HfArgumentParser) -> None:
         tokenizer=tokenizer,
         args=train_args,
         train_dataset=train_data,
+        eval_dataset=valid_data,
         data_collator=collator,
         callbacks=callbacks,
-        # eval_dataset=eval_data
     )
 
     if train_args.do_train:
@@ -103,11 +107,8 @@ def predict(trainer: Trainer) -> None:
     trainer.save_metrics("predict", metrics)
 
 
-def set_task(task_name) -> str:
-    return
-
-
-def set_env(process_name) -> None:
+def set_wandb_env(process_name) -> None:
+    # [NOTE]: 혹은 launch.json에서 설정하는 것도 가능.
     os.environ["WANDB_CACHE_DIR"] = "/data/jsb193/github/t5/.cache"
     os.environ["WANDB_DIR"] = "/data/jsb193/github/KoGPT_num_converter/T5/wandb"
     os.environ["WANDB_NAME"] = process_name
@@ -119,15 +120,15 @@ def set_env(process_name) -> None:
 
 
 if __name__ == "__main__":
-    # [NOTE]: check wandb env variable
-    # -> 환경 변수를 이용해 상세한 조작이 가능함.
-    # https://docs.wandb.ai/guides/track/advanced/environment-variables
-
-    parser = HfArgumentParser(TrainingArguments, ModelArgument, DataArgument)
+    parser = HfArgumentParser([TrainingArguments, ModelArgument, DataArgument])
     process_name = "[JP]T5_test"
     setproctitle(process_name)
 
-    # os.environ["WANDB .... "] = process_name
-    set_env(process_name)
+    os.environ["WANDB_DISABLED"] = "true"
+    if os.getenv("WANDB_DISABLED") == "false":
+        # [NOTE]: check wandb env variable
+        # -> 환경 변수를 이용해 상세한 조작이 가능함.
+        #    https://docs.wandb.ai/guides/track/advanced/environment-variables
+        set_wandb_env(process_name)
 
     main(parser)
