@@ -1,2 +1,2 @@
-from data_argument import DataArgument
-from model_argument import ModelArgument
+from .data_argument import DataArgument
+from .model_argument import ModelArgument
