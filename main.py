@@ -13,7 +13,8 @@ from transformers import (
 from transformers.integrations import WandbCallback
 
 from data.collator import T5Collator
-from utils.argument import DataArgument, ModelArgument
+
+from utils import DataArgument, ModelArgument
 
 
 def main(parser: HfArgumentParser) -> None:
@@ -25,10 +26,10 @@ def main(parser: HfArgumentParser) -> None:
         model_args.model_name_or_path, config=config, cache_dir=model_args.cache
     )
 
-    train_data = load_dataset(data_args.data_name_or_script, cache_dir=model_args.cache)
+    train_data = load_dataset("csv", data_files=data_args.data_name_or_script, cache_dir=model_args.cache)
     # [NOTE]: 아마 학습 데이터는 기본 sentence, label과 같은 구성으로 되어 있을 가능성이 높다.
 
-    # [임시]: splited_data = train_data.train_test_split(0.2) # 만에 하나 train데이터만 있는 경우 ---------------------------- **데이터가 하나만 있는 경우**
+    # [임시]: splited_data = train_data["train"].train_test_split(0.2) # 만에 하나 train데이터만 있는 경우 ---------------------------- **데이터가 하나만 있는 경우**
 
     def preprocess(input_values: Dataset) -> dict:
         """
@@ -41,7 +42,7 @@ def main(parser: HfArgumentParser) -> None:
         # [NOTE]: 이런 prompt의 경우 config에서 설정해야 할 듯 하다.
         #         config에 task_specific_params라는 값이 있는데 이 값을 이용하는게 HF 개발자가 의도한 사용법이 아닐까 생각함.
 
-        train_prompt = "translation_digit_to_text"
+        train_prompt = "translation_num_to_text"
         label_prompt = "label"
 
         train_input = f"{train_prompt}: {input_values[train_col_name]}"
@@ -106,6 +107,17 @@ def set_task(task_name) -> str:
     return
 
 
+def set_env(process_name) -> None:
+    os.environ["WANDB_CACHE_DIR"] = "/data/jsb193/github/t5/.cache"
+    os.environ["WANDB_DIR"] = "/data/jsb193/github/KoGPT_num_converter/T5/wandb"
+    os.environ["WANDB_NAME"] = process_name
+    os.environ["WANDB_NOTEBOOK_NAME"] = "test run t5, just ignore"  # --check name
+    os.environ["WANDB_USERNAME"] = "jp_42maru"
+    os.environ["WANDB_RUN_GROUP"] = "tadev"
+    os.environ["WANDB_TAGS"] = "T5, finetune, test"
+    os.environ["WANDB_DISABLE_CODE"] = "false"
+
+
 if __name__ == "__main__":
     # [NOTE]: check wandb env variable
     # -> 환경 변수를 이용해 상세한 조작이 가능함.
@@ -116,13 +128,6 @@ if __name__ == "__main__":
     setproctitle(process_name)
 
     # os.environ["WANDB .... "] = process_name
-    os.environ["WANDB_CACHE_DIR"] = "/data/jsb193/github/t5/.cache"
-    os.environ["WANDB_DIR"] = "/data/jsb193/github/KoGPT_num_converter/T5/wandb"
-    os.environ["WANDB_NAME"] = process_name
-    os.environ["WANDB_NOTEBOOK_NAME"] = "test run t5, just ignore"  # --check name
-    os.environ["WANDB_USERNAME"] = "jp_42maru"
-    os.environ["WANDB_RUN_GROUP"] = "tadev"
-    os.environ["WANDB_TAGS"] = "T5, finetune, test"
-    os.environ["WANDB_DISABLE_CODE"] = "false"
+    set_env(process_name)
 
     main(parser)
