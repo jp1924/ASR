@@ -26,10 +26,9 @@ def main(parser: HfArgumentParser) -> None:
     )
 
     train_data = load_dataset(data_args.data_name_or_script, cache_dir=model_args.cache)
-    # [NOTE]: 아마 학습용 데이터는 기본 sentence, label과 같은 구성으로 되어 있을 가능성이 높다.
+    # [NOTE]: 아마 학습 데이터는 기본 sentence, label과 같은 구성으로 되어 있을 가능성이 높다.
 
-    # [임시]: splited_data = train_data.train_test_split(0.2)
-    # 만에 하나 train데이터만 있는 경우 ---------------------------- **데이터가 하나만 있는 경우**
+    # [임시]: splited_data = train_data.train_test_split(0.2) # 만에 하나 train데이터만 있는 경우 ---------------------------- **데이터가 하나만 있는 경우**
 
     def preprocess(input_values: Dataset) -> dict:
         """
@@ -116,6 +115,14 @@ if __name__ == "__main__":
     process_name = "[JP]T5_test"
     setproctitle(process_name)
 
-    # os.environ("WANDB .... ") = process_name
+    # os.environ["WANDB .... "] = process_name
+    os.environ["WANDB_CACHE_DIR"] = "/data/jsb193/github/t5/.cache"
+    os.environ["WANDB_DIR"] = "/data/jsb193/github/KoGPT_num_converter/T5/wandb"
+    os.environ["WANDB_NAME"] = process_name
+    os.environ["WANDB_NOTEBOOK_NAME"] = "test run t5, just ignore"  # --check name
+    os.environ["WANDB_USERNAME"] = "jp_42maru"
+    os.environ["WANDB_RUN_GROUP"] = "tadev"
+    os.environ["WANDB_TAGS"] = "T5, finetune, test"
+    os.environ["WANDB_DISABLE_CODE"] = "false"
 
     main(parser)
