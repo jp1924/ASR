@@ -135,31 +135,13 @@ def predict(trainer: Seq2SeqTrainer, test_data) -> None:
     trainer.save_metrics("predict", metrics)
 
 
-def set_wandb_env(process_name) -> None:
-    """"""
-    # [NOTE]: 혹은 launch.json에서 설정하는 것도 가능.
-    # [NOTE]: json -> https://stackoverflow.com/questions/36231681/how-to-perform-os-environ-join-in-python
-    os.environ["WANDB_CACHE_DIR"] = "/data/jsb193/github/t5/.cache"
-    os.environ["WANDB_DIR"] = "/data/jsb193/github/t5/T5"
-    os.environ["WANDB_NAME"] = process_name
-    os.environ["WANDB_NOTEBOOK_NAME"] = "run for t5 testing, please ignore this project"  # --check name
-    os.environ["WANDB_USERNAME"] = "jp_42maru"
-    os.environ["WANDB_RUN_GROUP"] = "tadev"
-    os.environ["WANDB_TAGS"] = "T5, finetune, test"
-    os.environ["WANDB_DISABLE_CODE"] = "false"
-
-
 if __name__ == "__main__":
     parser = HfArgumentParser([TrainingArguments, ModelArgument, DataArgument])
 
     process_name = "T5"
     setproctitle(process_name)
-
-    os.environ["WANDB_DISABLED"] = "true"
-    if os.getenv("WANDB_DISABLED") == "false":
-        # [NOTE]: check wandb env variable
-        # -> 환경 변수를 이용해 조작이 가능함.
-        #    https://docs.wandb.ai/guides/track/advanced/environment-variables
-        set_wandb_env(process_name)
+    # [NOTE]: check wandb env variable
+    # -> 환경 변수를 이용해 조작이 가능함.
+    #    https://docs.wandb.ai/guides/track/advanced/environment-variables
 
     main(parser)
