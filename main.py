@@ -2,7 +2,8 @@ import os
 from typing import Dict
 import numpy as np
 
-from datasets import Dataset, load_dataset, load_metric
+from datasets import Dataset, load_dataset
+from evaluate import load
 from setproctitle import setproctitle
 from transformers import (
     HfArgumentParser,
@@ -13,6 +14,7 @@ from transformers import (
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
     DataCollatorForSeq2Seq,
+    set_seed,
 )
 from transformers.trainer_utils import EvalPrediction
 from transformers.integrations import WandbCallback
@@ -22,6 +24,7 @@ from utils import DataArgument, ModelArgument
 def main(parser: HfArgumentParser) -> None:
     train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
     setproctitle(train_args.run_name)
+    set_seed(train_args.seed)
 
     tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
     config = T5Config.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
@@ -30,15 +33,12 @@ def main(parser: HfArgumentParser) -> None:
     )
     model.resize_token_embeddings(len(tokenizer))  # ??
 
-    # [NOTE]: datasets에서 csv를 불러올 때 무조건 columns이 명시 되어 있어야 한다.
-    #         datasets은 상단의 열을 columns으로 인식하기 때문에 잘못하면 이상한 columns이 될 수 있다.
     loaded_data = load_dataset(
         "csv", data_files=data_args.data_name_or_script, cache_dir=model_args.cache, split="train"
     )
 
     def preprocess(input_values: Dataset) -> dict:
         """"""
-
         train_prompt = "translation_num_to_text"
         train_input = f"""{train_prompt}: {input_values["num_col"]}"""
         label_input = input_values["sen_col"]
@@ -51,40 +51,45 @@ def main(parser: HfArgumentParser) -> None:
         return result
 
     # [NOTE]: data preprocess
-    desc_name = "T5_preprocess"
-    loaded_data = loaded_data.map(preprocess, num_proc=data_args.num_proc, desc=desc_name)
+    loaded_data = loaded_data.map(preprocess, num_proc=data_args.num_proc)
     loaded_data = loaded_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
 
     # [NOTE]: check data
     if train_args.do_eval or train_args.do_predict:
-        # 들어오는 데이터 파일을 train, valid, test로 구분해야 할지
-        # 아님 하나의 data에서 train, valid, test를 분리 해야할 지 모르겠다.
-        splited_data = loaded_data.train_test_split(0.001)
+        splited_data = loaded_data.train_test_split(0.0005)
         train_data = splited_data["train"]
         valid_data = splited_data["test"]
     else:
         train_data = loaded_data
         valid_data = None
 
-    wer = load_metric("wer")
-    blue = load_metric("bleu")
-    rouge = load_metric("rouge")
+    blue = load("evaluate-metric/bleu", cache_dir=model_args.cache)
+    rouge = load("evaluate-metric/rouge", cache_dir=model_args.cache)
 
     def metrics(evaluation_result: EvalPrediction) -> Dict[str, float]:
-        predicts = evaluation_result.predictions[0]
-        predicts = predicts.argmax(2)
+        result = dict()
+
+        predicts = evaluation_result.predictions
+        predicts = np.where(predicts != -100, predicts, tokenizer.pad_token_id)
         decoded_preds = tokenizer.batch_decode(predicts, skip_special_tokens=True)
 
         labels = evaluation_result.label_ids
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-        wer_score = wer._compute(decoded_preds, decoded_labels)
         blue_score = blue._compute(decoded_preds, decoded_labels)
+        blue_score.pop("precisions")
+
         rouge_score = rouge._compute(decoded_preds, decoded_labels)
 
-        result = {"wer": wer_score, "blue": blue_score, "rouge": rouge_score}
+        result.update(rouge_score)
+        result.update(blue_score)
+
         return result
+
+    def logits_for_metrics(logits, _):
+        return_logits = logits[0].argmax(dim=-1)
+        return return_logits
 
     collator = DataCollatorForSeq2Seq(tokenizer, model)
     callbacks = [WandbCallback] if os.getenv("WANDB_DISABLED") == "false" else None
@@ -97,6 +102,7 @@ def main(parser: HfArgumentParser) -> None:
         eval_dataset=valid_data,
         data_collator=collator,
         callbacks=callbacks,
+        preprocess_logits_for_metrics=logits_for_metrics,
     )
 
     if train_args.do_train:
