@@ -10,7 +10,7 @@ from transformers import (
     T5ForConditionalGeneration,
     T5Tokenizer,
     T5TokenizerFast,
-    Trainer,
+    Seq2SeqTrainer,
     TrainingArguments,
     DataCollatorForSeq2Seq,
 )
@@ -75,6 +75,7 @@ def main(parser: HfArgumentParser) -> None:
     wer = load_metric("wer")
     blue = load_metric("bleu")
     rouge = load_metric("rouge")
+
     def metrics(predictions: np.ndarray, references: np.ndarray) -> Dict[str, Union[int, float]]:
 
         print
@@ -87,7 +88,7 @@ def main(parser: HfArgumentParser) -> None:
 
     collator = DataCollatorForSeq2Seq(tokenizer, model)
     callbacks = [WandbCallback] if os.getenv("WANDB_DISABLED") == "false" else None
-    trainer = Trainer(
+    trainer = Seq2SeqTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=train_data,
@@ -106,7 +107,7 @@ def main(parser: HfArgumentParser) -> None:
         predict(trainer, valid_data)
 
 
-def train(trainer: Trainer, label_name: str) -> None:
+def train(trainer: Seq2SeqTrainer, label_name: str) -> None:
     """"""
     outputs = trainer.train()
     metrics = outputs.metrics
@@ -116,7 +117,7 @@ def train(trainer: Trainer, label_name: str) -> None:
     trainer.save_state()
 
 
-def eval(trainer: Trainer) -> None:
+def eval(trainer: Seq2SeqTrainer) -> None:
     """"""
     outputs = trainer.evaluate()
     metrics = outputs.metrics
@@ -125,7 +126,7 @@ def eval(trainer: Trainer) -> None:
     trainer.save_metrics("eval", metrics)
 
 
-def predict(trainer: Trainer, test_data) -> None:
+def predict(trainer: Seq2SeqTrainer, test_data) -> None:
     """"""
     outputs = trainer.predict(test_dataset=test_data)
     metrics = outputs.metrics
