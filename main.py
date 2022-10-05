@@ -1,7 +1,5 @@
-# example_source: https://github.com/huggingface/transformers/tree/main/examples/pytorch/translation
-
 import os
-from typing import Dict, Union
+from typing import Dict
 import numpy as np
 
 from datasets import Dataset, load_dataset, load_metric
@@ -23,6 +21,7 @@ from utils import DataArgument, ModelArgument
 
 def main(parser: HfArgumentParser) -> None:
     train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
+    setproctitle(train_args.run_name)
 
     tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
     config = T5Config.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
@@ -38,37 +37,29 @@ def main(parser: HfArgumentParser) -> None:
     )
 
     def preprocess(input_values: Dataset) -> dict:
-        """
-        Text To Text: train, label 데이터도 전부 text임.
-        """
-
-        # [NOTE]: 이런 prompt의 경우 config에서 설정해야 할 듯 하다.
-        #         config에 task_specific_params라는 값이 있는데 이 값을 이용하는게 HF 개발자가 의도한 사용법이 아닐까 생각함.
-        # [NOTE]: 임시로 설정한 이름들, 나중에 데이터를 받아보면 삭제됨.
-        train_col_name = "sentence"
-        label_col_name = "label"
+        """"""
 
         train_prompt = "translation_num_to_text"
-
-        train_input = f"{train_prompt}: {input_values[train_col_name]}"
-        label_input = input_values[label_col_name]
+        train_input = f"""{train_prompt}: {input_values["num_col"]}"""
+        label_input = input_values["sen_col"]
 
         # [NOTE]: train이라는 이름은 나중에 바꾸는 게 좋을 듯 valid, test도 있어서 맞지가 않는다.
         train_encoded = tokenizer(train_input, return_attention_mask=False)
         label_encoded = tokenizer(label_input, return_attention_mask=False)
 
-        result = {"sentence": train_encoded["input_ids"], "label": label_encoded["input_ids"]}
+        result = {"num_col": train_encoded["input_ids"], "sen_col": label_encoded["input_ids"]}
         return result
 
     # [NOTE]: data preprocess
     desc_name = "T5_preprocess"
     loaded_data = loaded_data.map(preprocess, num_proc=data_args.num_proc, desc=desc_name)
-    loaded_data = loaded_data.rename_columns({"sentence": "input_ids", "label": "labels"})
+    loaded_data = loaded_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
+
     # [NOTE]: check data
     if train_args.do_eval or train_args.do_predict:
         # 들어오는 데이터 파일을 train, valid, test로 구분해야 할지
         # 아님 하나의 data에서 train, valid, test를 분리 해야할 지 모르겠다.
-        splited_data = loaded_data.train_test_split(0.0001)
+        splited_data = loaded_data.train_test_split(0.001)
         train_data = splited_data["train"]
         valid_data = splited_data["test"]
     else:
@@ -79,7 +70,7 @@ def main(parser: HfArgumentParser) -> None:
     blue = load_metric("bleu")
     rouge = load_metric("rouge")
 
-    def metrics(evaluation_result: EvalPrediction) -> Dict[str, Union[int, float]]:
+    def metrics(evaluation_result: EvalPrediction) -> Dict[str, float]:
         predicts = evaluation_result.predictions[0]
         predicts = predicts.argmax(2)
         decoded_preds = tokenizer.batch_decode(predicts, skip_special_tokens=True)
@@ -109,14 +100,14 @@ def main(parser: HfArgumentParser) -> None:
     )
 
     if train_args.do_train:
-        train(trainer, label_name="label")
+        train(trainer)
     if train_args.do_eval:
         eval(trainer)
     if train_args.do_predict:
         predict(trainer, valid_data)
 
 
-def train(trainer: Seq2SeqTrainer, label_name: str) -> None:
+def train(trainer: Seq2SeqTrainer) -> None:
     """"""
     outputs = trainer.train()
     metrics = outputs.metrics
@@ -145,12 +136,9 @@ def predict(trainer: Seq2SeqTrainer, test_data) -> None:
 
 
 if __name__ == "__main__":
+    # example_source: https://github.com/huggingface/transformers/tree/main/examples/pytorch/translation
     parser = HfArgumentParser([Seq2SeqTrainingArguments, ModelArgument, DataArgument])
-
-    process_name = "T5"
-    setproctitle(process_name)
     # [NOTE]: check wandb env variable
     # -> 환경 변수를 이용해 조작이 가능함.
     #    https://docs.wandb.ai/guides/track/advanced/environment-variables
-
     main(parser)
