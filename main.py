@@ -1,42 +1,28 @@
 import os
 from typing import Dict
-import numpy as np
 
+import numpy as np
 from datasets import Dataset, load_dataset
 from evaluate import load
 from setproctitle import setproctitle
 from transformers import (
+    DataCollatorForSeq2Seq,
     HfArgumentParser,
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
     T5Config,
     T5ForConditionalGeneration,
     T5Tokenizer,
     T5TokenizerFast,
-    Seq2SeqTrainer,
-    Seq2SeqTrainingArguments,
-    DataCollatorForSeq2Seq,
     set_seed,
 )
-from transformers.trainer_utils import EvalPrediction
 from transformers.integrations import WandbCallback
+from transformers.trainer_utils import EvalPrediction
+
 from utils import DataArgument, ModelArgument
 
 
 def main(parser: HfArgumentParser) -> None:
-    train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
-    setproctitle(train_args.run_name)
-    set_seed(train_args.seed)
-
-    tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
-    config = T5Config.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
-    model = T5ForConditionalGeneration.from_pretrained(
-        model_args.model_name_or_path, config=config, cache_dir=model_args.cache
-    )
-    model.resize_token_embeddings(len(tokenizer))  # ??
-
-    loaded_data = load_dataset(
-        "csv", data_files=data_args.data_name_or_script, cache_dir=model_args.cache, split="train"
-    )
-
     def preprocess(input_values: Dataset) -> dict:
         """"""
         train_prompt = "translation_num_to_text"
@@ -49,22 +35,6 @@ def main(parser: HfArgumentParser) -> None:
 
         result = {"num_col": train_encoded["input_ids"], "sen_col": label_encoded["input_ids"]}
         return result
-
-    # [NOTE]: data preprocess
-    loaded_data = loaded_data.map(preprocess, num_proc=data_args.num_proc)
-    loaded_data = loaded_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
-
-    # [NOTE]: check data
-    if train_args.do_eval or train_args.do_predict:
-        splited_data = loaded_data.train_test_split(0.0005)
-        train_data = splited_data["train"]
-        valid_data = splited_data["test"]
-    else:
-        train_data = loaded_data
-        valid_data = None
-
-    blue = load("evaluate-metric/bleu", cache_dir=model_args.cache)
-    rouge = load("evaluate-metric/rouge", cache_dir=model_args.cache)
 
     def metrics(evaluation_result: EvalPrediction) -> Dict[str, float]:
         result = dict()
@@ -91,8 +61,41 @@ def main(parser: HfArgumentParser) -> None:
         return_logits = logits[0].argmax(dim=-1)
         return return_logits
 
+    train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
+    setproctitle(train_args.run_name)
+    set_seed(train_args.seed)
+
+    # [NOTE]: 이 부분은 확인, 종종 fast와 normal로 나뉘기 때문에 에러가 발생하는 것을 방지하기 위한 목적
+    try:
+        tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
+    except Exception:
+        tokenizer = T5Tokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
+
+    config = T5Config.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
+    model = T5ForConditionalGeneration.from_pretrained(
+        model_args.model_name_or_path, config=config, cache_dir=model_args.cache
+    )
+    model.resize_token_embeddings(len(tokenizer))  # ??
+
+    loaded_data = load_dataset(
+        "csv", data_files=data_args.data_name_or_script, cache_dir=model_args.cache, split="train"
+    )
+    loaded_data = loaded_data.map(preprocess, num_proc=data_args.num_proc)
+    loaded_data = loaded_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
+
+    if train_args.do_eval or train_args.do_predict:
+        splited_data = loaded_data.train_test_split(0.0005)
+        train_data = splited_data["train"]
+        valid_data = splited_data["test"]
+    else:
+        train_data = loaded_data
+        valid_data = None
+
+    blue = load("evaluate-metric/bleu", cache_dir=model_args.cache)
+    rouge = load("evaluate-metric/rouge", cache_dir=model_args.cache)
     collator = DataCollatorForSeq2Seq(tokenizer, model)
     callbacks = [WandbCallback] if os.getenv("WANDB_DISABLED") == "false" else None
+
     trainer = Seq2SeqTrainer(
         model=model,
         tokenizer=tokenizer,
