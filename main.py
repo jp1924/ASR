@@ -1,3 +1,5 @@
+# example_source: https://github.com/huggingface/transformers/tree/main/examples/pytorch/translation
+
 import os
 from typing import Dict, Union
 import numpy as np
@@ -11,9 +13,10 @@ from transformers import (
     T5Tokenizer,
     T5TokenizerFast,
     Seq2SeqTrainer,
-    TrainingArguments,
+    Seq2SeqTrainingArguments,
     DataCollatorForSeq2Seq,
 )
+from transformers.trainer_utils import EvalPrediction
 from transformers.integrations import WandbCallback
 from utils import DataArgument, ModelArgument
 
@@ -26,6 +29,7 @@ def main(parser: HfArgumentParser) -> None:
     model = T5ForConditionalGeneration.from_pretrained(
         model_args.model_name_or_path, config=config, cache_dir=model_args.cache
     )
+    model.resize_token_embeddings(len(tokenizer))  # ??
 
     # [NOTE]: datasets에서 csv를 불러올 때 무조건 columns이 명시 되어 있어야 한다.
     #         datasets은 상단의 열을 columns으로 인식하기 때문에 잘못하면 이상한 columns이 될 수 있다.
@@ -45,10 +49,9 @@ def main(parser: HfArgumentParser) -> None:
         label_col_name = "label"
 
         train_prompt = "translation_num_to_text"
-        label_prompt = "label"
 
         train_input = f"{train_prompt}: {input_values[train_col_name]}"
-        label_input = f"{label_prompt}: {input_values[label_col_name]}"
+        label_input = input_values[label_col_name]
 
         # [NOTE]: train이라는 이름은 나중에 바꾸는 게 좋을 듯 valid, test도 있어서 맞지가 않는다.
         train_encoded = tokenizer(train_input, return_attention_mask=False)
@@ -65,7 +68,7 @@ def main(parser: HfArgumentParser) -> None:
     if train_args.do_eval or train_args.do_predict:
         # 들어오는 데이터 파일을 train, valid, test로 구분해야 할지
         # 아님 하나의 data에서 train, valid, test를 분리 해야할 지 모르겠다.
-        splited_data = loaded_data.train_test_split(0.001)
+        splited_data = loaded_data.train_test_split(0.0001)
         train_data = splited_data["train"]
         valid_data = splited_data["test"]
     else:
@@ -76,13 +79,19 @@ def main(parser: HfArgumentParser) -> None:
     blue = load_metric("bleu")
     rouge = load_metric("rouge")
 
-    def metrics(predictions: np.ndarray, references: np.ndarray) -> Dict[str, Union[int, float]]:
+    def metrics(evaluation_result: EvalPrediction) -> Dict[str, Union[int, float]]:
+        predicts = evaluation_result.predictions[0]
+        predicts = predicts.argmax(2)
+        decoded_preds = tokenizer.batch_decode(predicts, skip_special_tokens=True)
 
-        print
+        labels = evaluation_result.label_ids
+        labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-        wer_score = wer._compute()
-        blue_score = blue._compute()
-        rouge_score = rouge._compute()
+        wer_score = wer._compute(decoded_preds, decoded_labels)
+        blue_score = blue._compute(decoded_preds, decoded_labels)
+        rouge_score = rouge._compute(decoded_preds, decoded_labels)
+
         result = {"wer": wer_score, "blue": blue_score, "rouge": rouge_score}
         return result
 
@@ -136,7 +145,7 @@ def predict(trainer: Seq2SeqTrainer, test_data) -> None:
 
 
 if __name__ == "__main__":
-    parser = HfArgumentParser([TrainingArguments, ModelArgument, DataArgument])
+    parser = HfArgumentParser([Seq2SeqTrainingArguments, ModelArgument, DataArgument])
 
     process_name = "T5"
     setproctitle(process_name)
