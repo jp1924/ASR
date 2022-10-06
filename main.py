@@ -23,15 +23,20 @@ from utils import DataArgument, ModelArgument
 
 
 def main(parser: HfArgumentParser) -> None:
+    train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
+    setproctitle(train_args.run_name)
+    set_seed(train_args.seed)
+
     def preprocess(input_values: Dataset) -> dict:
         """"""
-        train_prompt = "translation_num_to_text"
-        train_input = f"""{train_prompt}: {input_values["num_col"]}"""
+        prompt = "translation_num_to_text"
+        train_input = f"""{prompt}: {input_values["num_col"]}"""
         label_input = input_values["sen_col"]
 
         # [NOTE]: train이라는 이름은 나중에 바꾸는 게 좋을 듯 valid, test도 있어서 맞지가 않는다.
-        train_encoded = tokenizer(train_input, return_attention_mask=False)
-        label_encoded = tokenizer(label_input, return_attention_mask=False)
+
+        train_encoded = tokenizer(train_input, return_attention_mask=False, max_length=240)
+        label_encoded = tokenizer(label_input, return_attention_mask=False, max_length=240)
 
         result = {"num_col": train_encoded["input_ids"], "sen_col": label_encoded["input_ids"]}
         return result
@@ -61,10 +66,6 @@ def main(parser: HfArgumentParser) -> None:
         return_logits = logits[0].argmax(dim=-1)
         return return_logits
 
-    train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
-    setproctitle(train_args.run_name)
-    set_seed(train_args.seed)
-
     # [NOTE]: 이 부분은 확인, 종종 fast와 normal로 나뉘기 때문에 에러가 발생하는 것을 방지하기 위한 목적
     try:
         tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
@@ -84,7 +85,7 @@ def main(parser: HfArgumentParser) -> None:
     loaded_data = loaded_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
 
     if train_args.do_eval or train_args.do_predict:
-        splited_data = loaded_data.train_test_split(0.0005)
+        splited_data = loaded_data.train_test_split(0.08)
         train_data = splited_data["train"]
         valid_data = splited_data["test"]
     else:
@@ -109,16 +110,16 @@ def main(parser: HfArgumentParser) -> None:
     )
 
     if train_args.do_train:
-        train(trainer)
+        train(trainer, train_args)
     if train_args.do_eval:
         eval(trainer)
     if train_args.do_predict:
         predict(trainer, valid_data)
 
 
-def train(trainer: Seq2SeqTrainer) -> None:
+def train(trainer: Seq2SeqTrainer, args) -> None:
     """"""
-    outputs = trainer.train()
+    outputs = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     metrics = outputs.metrics
 
     trainer.log_metrics("train", metrics)
