@@ -91,17 +91,14 @@ def main(parser: HfArgumentParser) -> None:
     gen_kwargs = task
 
     # [NOTE]: load datasets & preprocess data
-    loaded_data = load_dataset("csv", data_files=data_args.data_name, cache_dir=model_args.cache, split="train")
-    loaded_data = loaded_data.map(preprocess, num_proc=data_args.num_proc)
-    loaded_data = loaded_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
+    data_files = {"train": [data_args.train_data], "valid": [data_args._data]}
+    loaded_data = load_dataset("csv", data_files=data_files, cache_dir=model_args.cache)
 
-    if train_args.do_eval or train_args.do_predict:
-        splited_data = loaded_data.train_test_split(0.08)
-        train_data = splited_data["train"]
-        valid_data = splited_data["test"]
-    else:
-        train_data = loaded_data
-        valid_data = None
+    train_data = loaded_data["train"].map(preprocess, num_proc=data_args.num_proc)
+    train_data = train_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
+
+    valid_data = loaded_data["valid"].map(preprocess, num_proc=data_args.num_proc)
+    valid_data = valid_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
 
     # [NOTE]: load metrics & set Trainer arguments
     blue = load("evaluate-metric/bleu", cache_dir=model_args.cache)
