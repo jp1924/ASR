@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Tuple, Union
+from typing import Any, Dict, Tuple, Union
 
 import numpy as np
 from datasets import Dataset, load_dataset
@@ -13,14 +13,13 @@ from transformers import (
     Seq2SeqTrainingArguments,
     T5Config,
     T5ForConditionalGeneration,
-    T5Tokenizer,
     T5TokenizerFast,
     set_seed,
 )
 from transformers.integrations import WandbCallback
 from transformers.trainer_utils import EvalPrediction
 
-from utils import DataArgument, ModelArgument
+from utils import DataArgument, ModelArgument, set_task_specific_params
 
 
 def main(parser: HfArgumentParser) -> None:
@@ -28,9 +27,12 @@ def main(parser: HfArgumentParser) -> None:
     setproctitle(train_args.run_name)
     set_seed(train_args.seed)
 
+    # [NOTE]: 이 부분은 언제든지 수정될 수 있음. argument에서 값이 전달되지 않았을 때 애러가 발생하도록 하는 방법이 있을 거다.
+    assert model_args.task is None, "Must set model task, please insert your prompt!!"
+
     def preprocess(input_values: Dataset) -> dict:
         """"""
-        prompt = "translation_num_to_text"
+        # prompt = "translation_num_to_text"
         train_input = f"""{prompt}: {input_values["num_col"]}"""
         label_input = input_values["sen_col"]
 
@@ -66,17 +68,23 @@ def main(parser: HfArgumentParser) -> None:
         return_logits = logits[0].argmax(dim=-1)
         return return_logits
 
-    tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name, cache_dir=model_args.cache)
+    # [NOTE]
+    # 원래라면 model_name_or_path지만 그러니 변수의 길이가 너무 길어져서 indentation발생한다.
+    # 그래서 일단 변수의 이름을 **name**으로 통일한다.
 
+    tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name, cache_dir=model_args.cache)
     config_name = model_args.model_name if model_args.config_name is None else model_args.config_name
     config = T5Config.from_pretrained(config_name, cache_dir=model_args.cache)
-
     model = T5ForConditionalGeneration.from_pretrained(model_args.model_name, config=config, cache_dir=model_args.cache)
     model.resize_token_embeddings(len(tokenizer))  # ??
 
-    loaded_data = load_dataset(
-        "csv", data_files=data_args.data_name_or_script, cache_dir=model_args.cache, split="train"
-    )
+    # [NOTE]: set default taks_specifi_params
+    config = set_task_specific_params(config) if config.task_specific_params is None else config
+    task = config.task_specific_params[model_args.task]
+    prompt = task.pop("prefix")
+    gen_kwargs = task
+
+    loaded_data = load_dataset("csv", data_files=data_args.data_name, cache_dir=model_args.cache, split="train")
     loaded_data = loaded_data.map(preprocess, num_proc=data_args.num_proc)
     loaded_data = loaded_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
 
@@ -110,7 +118,7 @@ def main(parser: HfArgumentParser) -> None:
     if train_args.do_eval:
         eval(trainer, valid_data)
     if train_args.do_predict:
-        predict(trainer, valid_data)
+        predict(trainer, valid_data, gen_kwargs)
 
 
 def train(trainer: Seq2SeqTrainer, args) -> None:
@@ -132,10 +140,10 @@ def eval(trainer: Seq2SeqTrainer, eval_data: Dataset) -> None:
     trainer.save_metrics("eval", metrics)
 
 
-def predict(trainer: Seq2SeqTrainer, test_data: Dataset) -> None:
+def predict(trainer: Seq2SeqTrainer, test_data: Dataset, gen_kwargs: Dict[str, Any]) -> None:
     """"""
     trainer.args.predict_with_generate = True
-    outputs = trainer.predict(test_data)
+    outputs = trainer.predict(test_data, **gen_kwargs)
     metrics = outputs.metrics
 
     trainer.log_metrics("predict", metrics)
