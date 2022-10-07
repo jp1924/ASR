@@ -1,5 +1,3 @@
-#!/bin/bash
-
 script_path=""
 
 model_name_or_path=""
@@ -8,7 +6,7 @@ data_name_or_script=""
 output_dir=""
 cache_dir=""
 
-num_gpu = 1
+gpu_num = 1
 
 export CUDA_VISIBLE_DEVICES=""
 export WANDB_DISABLED=""
@@ -24,8 +22,7 @@ export WANDB_DISABLE_CODE=""
 export OMP_NUM_THREADS=8
 
 # --resume_from_checkpoint=$checkpoint_path \
-python -m torch.distributed.launch --standalone --nnodes=1 --nproc_per_node=$num_gpu \
-    $script_path \
+deepspeed --num_gpu $gpu_num script_path \
     --run_name="" \
     --model_name=$model_name_or_path \
     --data_name=$data_name_or_script \
@@ -48,5 +45,5 @@ python -m torch.distributed.launch --standalone --nnodes=1 --nproc_per_node=$num
     --do_train \
     --do_eval \
     --group_by_length \
-    --fp16 \
+    --fp16\
     --num_proc=10
