@@ -1,8 +1,9 @@
 import os
-from typing import Dict
+from typing import Dict, Tuple, Union
 
 import numpy as np
 from datasets import Dataset, load_dataset
+import torch
 from evaluate import load
 from setproctitle import setproctitle
 from transformers import (
@@ -34,11 +35,10 @@ def main(parser: HfArgumentParser) -> None:
         label_input = input_values["sen_col"]
 
         # [NOTE]: train이라는 이름은 나중에 바꾸는 게 좋을 듯 valid, test도 있어서 맞지가 않는다.
-
         train_encoded = tokenizer(train_input, return_attention_mask=False, max_length=240)
         label_encoded = tokenizer(label_input, return_attention_mask=False, max_length=240)
 
-        result = {"num_col": train_encoded["input_ids"], "sen_col": label_encoded["input_ids"]}
+        result = {"sen_col": train_encoded["input_ids"], "num_col": label_encoded["input_ids"]}
         return result
 
     def metrics(evaluation_result: EvalPrediction) -> Dict[str, float]:
@@ -62,15 +62,12 @@ def main(parser: HfArgumentParser) -> None:
 
         return result
 
-    def logits_for_metrics(logits, _):
+    def logits_for_metrics(logits: Union[Tuple, torch.Tensor], _) -> torch.Tensor:
         return_logits = logits[0].argmax(dim=-1)
         return return_logits
 
-    # [NOTE]: 이 부분은 확인, 종종 fast와 normal로 나뉘기 때문에 에러가 발생하는 것을 방지하기 위한 목적
-    try:
-        tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
-    except Exception:
-        tokenizer = T5Tokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
+    # [NOTE]: 이 부분은 확인, 종종 fast로 고정
+    tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
 
     config = T5Config.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
     model = T5ForConditionalGeneration.from_pretrained(
@@ -112,7 +109,7 @@ def main(parser: HfArgumentParser) -> None:
     if train_args.do_train:
         train(trainer, train_args)
     if train_args.do_eval:
-        eval(trainer)
+        eval(trainer, valid_data)
     if train_args.do_predict:
         predict(trainer, valid_data)
 
@@ -127,18 +124,19 @@ def train(trainer: Seq2SeqTrainer, args) -> None:
     trainer.save_state()
 
 
-def eval(trainer: Seq2SeqTrainer) -> None:
+def eval(trainer: Seq2SeqTrainer, eval_data: Dataset) -> None:
     """"""
-    outputs = trainer.evaluate()
+    outputs = trainer.evaluate(eval_data)
     metrics = outputs.metrics
 
     trainer.log_metrics("eval", metrics)
     trainer.save_metrics("eval", metrics)
 
 
-def predict(trainer: Seq2SeqTrainer, test_data) -> None:
+def predict(trainer: Seq2SeqTrainer, test_data: Dataset) -> None:
     """"""
-    outputs = trainer.predict(test_dataset=test_data)
+    trainer.args.predict_with_generate = True
+    outputs = trainer.predict(test_data)
     metrics = outputs.metrics
 
     trainer.log_metrics("predict", metrics)
