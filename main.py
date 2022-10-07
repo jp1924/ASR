@@ -44,6 +44,7 @@ def main(parser: HfArgumentParser) -> None:
         return result
 
     def metrics(evaluation_result: EvalPrediction) -> Dict[str, float]:
+        """"""
         result = dict()
 
         predicts = evaluation_result.predictions
@@ -65,6 +66,7 @@ def main(parser: HfArgumentParser) -> None:
         return result
 
     def logits_for_metrics(logits: Union[Tuple, torch.Tensor], _) -> torch.Tensor:
+        """"""
         return_logits = logits[0].argmax(dim=-1)
         return return_logits
 
@@ -138,20 +140,22 @@ def train(trainer: Seq2SeqTrainer, args) -> None:
 def eval(trainer: Seq2SeqTrainer, eval_data: Dataset) -> None:
     """"""
     outputs = trainer.evaluate(eval_data)
-    metrics = outputs.metrics
+    # metrics = outputs.metrics
 
-    trainer.log_metrics("eval", metrics)
-    trainer.save_metrics("eval", metrics)
+    # trainer.log_metrics("eval", metrics)
+    # trainer.save_metrics("eval", metrics)
+    pass
 
 
 def predict(trainer: Seq2SeqTrainer, test_data: Dataset, gen_kwargs: Dict[str, Any]) -> None:
     """"""
     trainer.args.predict_with_generate = True
     outputs = trainer.predict(test_data, **gen_kwargs)
-    metrics = outputs.metrics
+    # metrics = outputs.metrics
 
-    trainer.log_metrics("predict", metrics)
-    trainer.save_metrics("predict", metrics)
+    # trainer.log_metrics("predict", metrics)
+    # trainer.save_metrics("predict", metrics)
+    pass
 
 
 if __name__ == "__main__":
@@ -160,4 +164,5 @@ if __name__ == "__main__":
     # [NOTE]: check wandb env variable
     # -> 환경 변수를 이용해 조작이 가능함.
     #    https://docs.wandb.ai/guides/track/advanced/environment-variables
+
     main(parser)
