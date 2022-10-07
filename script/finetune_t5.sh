@@ -7,6 +7,19 @@ data_name_or_script=""
 output_dir=""
 cache_dir=""
 
+export CUDA_VISIBLE_DEVICES=""
+export WANDB_DISABLED=""
+export WANDB_PROJECT=""
+export WANDB_ENTITY=""
+export WANDB_CACHE_DIR=$cache_dir
+export WANDB_USERNAME=""
+export WANDB_RUN_GROUP=""
+export WANDB_TAGS=""
+export WANDB_DISABLE_CODE=""
+# export WANDB_RESUME=""
+# export WANDB_RUN_ID=""
+export OMP_NUM_THREADS=8
+
 # T5 finetune script
 export OMP_NUM_THREADS=8
 python $script_path \
