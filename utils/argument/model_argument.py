@@ -6,4 +6,4 @@ class ModelArgument:
     model_name: str = field(default=None)
     config_name: str = field(default=None)
     cache: str = field(default=None)
-    task: str = field(default="translation_digit_to_text")
+    task: str = field(default=None)
