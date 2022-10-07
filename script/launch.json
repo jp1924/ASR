@@ -7,16 +7,39 @@
             "type": "python",
             "request": "launch",
             "program": "", // --check
+            // "module": "torch.distributed.launch",
             "console": "integratedTerminal",
             "justMyCode": false,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "",
+                "WANDB_DISABLED": "",
+                "WANDB_PROJECT": "",
+                "WANDB_ENTITY": "",
+                "WANDB_CACHE_DIR": "",
+                "WANDB_USERNAME": "",
+                "WANDB_RUN_GROUP": "",
+                "WANDB_TAGS": "",
+                "WANDB_DISABLE_CODE": "",
+                "WANDB_RESUME": "",
+                "WANDB_RUN_ID": ""
+            },
             "args": [
+                // "--standalone",
+                // "--nnodes=1",
+                // "--nproc_per_node=1",
+                // "",
+                "--run_name=", // --check
                 "--model_name_or_path=", // --check
+                // "--resume_from_checkpoint=", // --check
                 "--data_name_or_script=", // --check
                 "--output_dir=", // --check
                 "--cache=", // --check
                 "--do_train",
-                "--num_proc=6",
-                "--learning_rate=1e-5",
+                "--do_eval",
+                "--do_predict",
+                "--fp16",
+                "--num_proc=10",
+                "--learning_rate=2e-5",
                 "--per_device_train_batch_size=10",
                 "--per_device_eval_batch_size=4",
                 "--num_train_epochs=2",
@@ -27,7 +50,8 @@
                 "--logging_strategy=steps",
                 "--logging_steps=1",
                 "--evaluation_strategy=steps",
-                "--eval_steps=5000",
+                "--eval_steps=1000",
+                "--predict_with_generate=false"
             ]
         }
     ]
