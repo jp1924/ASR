@@ -66,13 +66,12 @@ def main(parser: HfArgumentParser) -> None:
         return_logits = logits[0].argmax(dim=-1)
         return return_logits
 
-    # [NOTE]: 이 부분은 확인, 종종 fast로 고정
-    tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
+    tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name, cache_dir=model_args.cache)
 
-    config = T5Config.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache)
-    model = T5ForConditionalGeneration.from_pretrained(
-        model_args.model_name_or_path, config=config, cache_dir=model_args.cache
-    )
+    config_name = model_args.model_name if model_args.config_name is None else model_args.config_name
+    config = T5Config.from_pretrained(config_name, cache_dir=model_args.cache)
+
+    model = T5ForConditionalGeneration.from_pretrained(model_args.model_name, config=config, cache_dir=model_args.cache)
     model.resize_token_embeddings(len(tokenizer))  # ??
 
     loaded_data = load_dataset(
