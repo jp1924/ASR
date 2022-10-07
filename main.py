@@ -1,9 +1,12 @@
 import os
+
+# for type annotation
+from argparse import Namespace
 from typing import Any, Dict, Tuple, Union
 
 import numpy as np
-from datasets import Dataset, load_dataset
 import torch
+from datasets import Dataset, load_dataset
 from evaluate import load
 from setproctitle import setproctitle
 from transformers import (
@@ -127,7 +130,7 @@ def main(parser: HfArgumentParser) -> None:
         predict(trainer, valid_data, gen_kwargs)
 
 
-def train(trainer: Seq2SeqTrainer, args) -> None:
+def train(trainer: Seq2SeqTrainer, args: Namespace) -> None:
     """"""
     outputs = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     metrics = outputs.metrics
