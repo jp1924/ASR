@@ -72,18 +72,20 @@ def main(parser: HfArgumentParser) -> None:
     # 원래라면 model_name_or_path지만 그러니 변수의 길이가 너무 길어져서 indentation발생한다.
     # 그래서 일단 변수의 이름을 **name**으로 통일한다.
 
+    # [NOTE]: load model, tokenizer, config
     tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name, cache_dir=model_args.cache)
     config_name = model_args.model_name if model_args.config_name is None else model_args.config_name
     config = T5Config.from_pretrained(config_name, cache_dir=model_args.cache)
     model = T5ForConditionalGeneration.from_pretrained(model_args.model_name, config=config, cache_dir=model_args.cache)
     model.resize_token_embeddings(len(tokenizer))  # ??
 
-    # [NOTE]: set default taks_specifi_params
+    # [NOTE]: set default taks_specifi_params & set gen_kwargs
     config = set_task_specific_params(config) if config.task_specific_params is None else config
     task = config.task_specific_params[model_args.task]
     prompt = task.pop("prefix")
     gen_kwargs = task
 
+    # [NOTE]: load datasets & preprocess data
     loaded_data = load_dataset("csv", data_files=data_args.data_name, cache_dir=model_args.cache, split="train")
     loaded_data = loaded_data.map(preprocess, num_proc=data_args.num_proc)
     loaded_data = loaded_data.rename_columns({"num_col": "input_ids", "sen_col": "labels"})
@@ -96,6 +98,7 @@ def main(parser: HfArgumentParser) -> None:
         train_data = loaded_data
         valid_data = None
 
+    # [NOTE]: load metrics & set Trainer arguments
     blue = load("evaluate-metric/bleu", cache_dir=model_args.cache)
     rouge = load("evaluate-metric/rouge", cache_dir=model_args.cache)
     collator = DataCollatorForSeq2Seq(tokenizer, model)
@@ -113,6 +116,7 @@ def main(parser: HfArgumentParser) -> None:
         preprocess_logits_for_metrics=logits_for_metrics,
     )
 
+    # [NOTE]: run train, eval, predict
     if train_args.do_train:
         train(trainer, train_args)
     if train_args.do_eval:
