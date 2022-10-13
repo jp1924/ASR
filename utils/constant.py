@@ -4,29 +4,33 @@ from transformers import PretrainedConfig
 
 # Dict[str, Dict[str:Any]]
 def set_task_specific_params(config: PretrainedConfig) -> PretrainedConfig:
-    """"""
+    """_set_task_specific_params_
+        predict시 model.generate의 BeamSearch를 위한 값을 설정하는 함수입니다.
+        이 값들은 prefix만 제외한 나머지 값들은 kwargs값으로 model.generate에 전달됩니다.
+        prefix는 기본적으로 key값과 동일해야 합니다.
+
+        - huggingface.PretrainedConfig.task_specific_params
+        https://huggingface.co/docs/transformers/main_classes/configuration#transformers.PretrainedConfig.task_specific_params
+    Args:
+        config (PretrainedConfig): 값을 넣어줄 config를 전달받습니다.
+
+    Returns:
+        PretrainedConfig: task_specific_params값을 넣은 config가 반환됩니다.
+    """
+
     task_specific_params = {
         "task_specific_params": {
-            "summarization": {
-                "early_stopping": True,
-                "length_penalty": 2.0,
-                "max_length": 200,
-                "min_length": 30,
-                "no_repeat_ngram_size": 3,
-                "num_beams": 4,
-                "prefix": "summarize: ",
-            },
-            "translation_num_to_text": {
+            "translation_num_to_txt": {
                 "early_stopping": True,
                 "max_length": 500,
                 "num_beams": 5,
-                "prefix": "translation_num_to_text: ",
+                "prefix": "translation_num_to_txt: ",
             },
-            "translation_text_to_num": {
+            "translation_txt_to_num": {
                 "early_stopping": True,
                 "max_length": 500,
                 "num_beams": 5,
-                "prefix": "translation_text_to_num: ",
+                "prefix": "translation_txt_to_num: ",
             },
         },
     }
