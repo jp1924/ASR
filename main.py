@@ -46,8 +46,7 @@ def main(parser: HfArgumentParser) -> None:
     setproctitle(train_args.run_name)
     set_seed(train_args.seed)
 
-    # [NOTE]: 이 부분은 언제든지 수정될 수 있음. argument에서 값이 전달되지 않았을 때 애러가 발생하도록 하는 방법이 있을 거다.
-    assert model_args.task is not None, "Must set model task, please insert your prompt!!"  # check!!!!!!!!!!!!!!!!!!!!
+    assert model_args.task is not None, "Must set model task, please insert your prompt!!"
 
     def preprocess(input_values: Dataset) -> dict:
         """_preprocess_
@@ -64,11 +63,13 @@ def main(parser: HfArgumentParser) -> None:
 
         # prompt = "translation_num_to_text"
         train_input = f"""{prompt}: {input_values["num_col"]}"""
-        label_input = input_values["sen_col"]
+        label_input = {input_values["sen_col"]}
 
-        # [NOTE]: train이라는 이름은 나중에 바꾸는 게 좋을 듯 valid, test도 있어서 맞지가 않는다.
+        # [NOTE]: Tokenizer에서 EOS토큰을 자동으로 붙여준다.
         train_encoded = tokenizer(train_input, return_attention_mask=False, max_length=240)
         label_encoded = tokenizer(label_input, return_attention_mask=False, max_length=240)
+
+        train_encoded["input_ids"] = train_encoded["input_ids"][-1]  # </eos> 재거
 
         result = {"input_ids": train_encoded["input_ids"], "labels": label_encoded["input_ids"]}
         return result
@@ -140,12 +141,17 @@ def main(parser: HfArgumentParser) -> None:
     gen_kwargs = task
 
     # [NOTE]: load datasets & preprocess data
-    data_files = {"train": [data_args.train_data], "valid": [data_args.valid_data]}
+    data_files = dict()
+    if train_args.do_train:
+        data_files.update({"train": [data_args.train_data]})
+    if train_args.do_predict or train_args.do_eval:
+        data_files.update({"valid": [data_args.valid_data]})
+
+    assert data_files is not {}, "please set args do_train, do_eval, do_predict!!!!!!!!"
     loaded_data = load_dataset("csv", data_files=data_files, cache_dir=model_args.cache)
 
-    # [NOTE]: 기존 col_num, col_sen은 남아 있지만
-    train_data = loaded_data["train"].map(preprocess, num_proc=data_args.num_proc)
-    valid_data = loaded_data["valid"].map(preprocess, num_proc=data_args.num_proc)
+    train_data = loaded_data["train"].map(preprocess, num_proc=data_args.num_proc) if "train" in loaded_data else None
+    valid_data = loaded_data["valid"].map(preprocess, num_proc=data_args.num_proc) if "valid" in loaded_data else None
 
     # [NOTE]: load metrics & set Trainer arguments
     blue = load("evaluate-metric/bleu", cache_dir=model_args.cache)
@@ -157,9 +163,9 @@ def main(parser: HfArgumentParser) -> None:
         model=model,
         tokenizer=tokenizer,
         train_dataset=train_data,
-        compute_metrics=metrics,
-        args=train_args,
         eval_dataset=valid_data,
+        args=train_args,
+        compute_metrics=metrics,
         data_collator=collator,
         callbacks=callbacks,
         preprocess_logits_for_metrics=logits_for_metrics,
