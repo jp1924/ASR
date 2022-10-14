@@ -63,7 +63,7 @@ def main(parser: HfArgumentParser) -> None:
 
         # prompt = "translation_num_to_text"
         train_input = f"""{prompt}: {input_values["num_col"]}"""
-        label_input = {input_values["sen_col"]}
+        label_input = input_values["sen_col"]
 
         # [NOTE]: Tokenizer에서 EOS토큰을 자동으로 붙여준다.
         train_encoded = tokenizer(train_input, return_attention_mask=False, max_length=240)
