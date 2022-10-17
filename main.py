@@ -161,8 +161,6 @@ def main(parser: HfArgumentParser) -> None:
     collator = DataCollatorForSeq2Seq(tokenizer, model)
     callbacks = [WandbCallback] if os.getenv("WANDB_DISABLED") == "false" else None
 
-    valid_data = valid_data.train_test_split(0.02)["test"]
-
     trainer = Seq2SeqTrainer(
         model=model,
         tokenizer=tokenizer,
