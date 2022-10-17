@@ -1,0 +1,11 @@
+torch==1.10.1+cu111 -f https://download.pytorch.org/whl/torch_stable.html
+transformers==4.23.1
+datasets==2.6.1
+evaluate==0.3.0
+rouge_score>=0.1.2
+wandb==0.13.4
+black
+flake8
+absl-py
+nltk
+setproctitle
