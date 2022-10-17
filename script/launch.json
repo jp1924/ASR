@@ -6,7 +6,7 @@
             "name": "Python: run_T5_main",
             "type": "python",
             "request": "launch",
-            "program": "", // --check
+            "program": "",
             // "module": "torch.distributed.launch",
             "console": "integratedTerminal",
             "justMyCode": false,
@@ -25,33 +25,35 @@
             },
             "args": [
                 // "--standalone",
-                // "--nnodes=1",
-                // "--nproc_per_node=1",
+                // "--nnodes=",
+                // "--nproc_per_node=",
                 // "",
-                "--run_name=", // --check
-                "--model_name_or_path=", // --check
-                // "--resume_from_checkpoint=", // --check
-                "--data_name_or_script=", // --check
-                "--output_dir=", // --check
-                "--cache=", // --check
+                "--run_name=",
+                "--model_name=",
+                // "--resume_from_checkpoint=", 
+                "--train_data=",
+                "--valid_data=",
+                "--output_dir=",
+                "--cache=",
+                "--task=",
                 "--do_train",
                 "--do_eval",
                 "--do_predict",
                 "--fp16",
-                "--num_proc=10",
-                "--learning_rate=2e-5",
-                "--per_device_train_batch_size=10",
-                "--per_device_eval_batch_size=4",
-                "--num_train_epochs=2",
-                "--gradient_accumulation_steps=2",
-                "--eval_accumulation_steps=2",
-                "--lr_scheduler_type=linear",
-                "--warmup_steps=1000",
-                "--logging_strategy=steps",
-                "--logging_steps=1",
-                "--evaluation_strategy=steps",
-                "--eval_steps=1000",
-                "--predict_with_generate=false"
+                "--num_proc=",
+                "--learning_rate=",
+                "--per_device_train_batch_size=",
+                "--per_device_eval_batch_size=",
+                "--num_train_epochs=",
+                "--gradient_accumulation_steps=",
+                "--eval_accumulation_steps=",
+                "--lr_scheduler_type=",
+                "--warmup_steps=",
+                "--logging_strategy=",
+                "--logging_steps=",
+                "--evaluation_strategy=",
+                "--eval_steps=",
+                "--predict_with_generate="
             ]
         }
     ]
