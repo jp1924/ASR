@@ -69,7 +69,7 @@ def main(parser: HfArgumentParser) -> None:
         train_encoded = tokenizer(train_input, return_attention_mask=False, max_length=240)
         label_encoded = tokenizer(label_input, return_attention_mask=False, max_length=240)
 
-        train_encoded["input_ids"] = train_encoded["input_ids"][-1]  # </eos> 재거
+        train_encoded["input_ids"] = train_encoded["input_ids"][:-1]  # </eos> 재거
 
         result = {"input_ids": train_encoded["input_ids"], "labels": label_encoded["input_ids"]}
         return result
@@ -98,13 +98,13 @@ def main(parser: HfArgumentParser) -> None:
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-        blue_score = blue._compute(decoded_preds, decoded_labels)
-        blue_score.pop("precisions")
+        bleu_score = bleu._compute(decoded_preds, decoded_labels)
+        bleu_score.pop("precisions")
 
-        rouge_score = rouge._compute(decoded_preds, decoded_labels, tokenizer=tokenizer)
+        rouge_score = rouge._compute(decoded_preds, decoded_labels, tokenizer=rouge_tokenizer)
 
         result.update(rouge_score)
-        result.update(blue_score)
+        result.update(bleu_score)
 
         return result
 
@@ -154,10 +154,14 @@ def main(parser: HfArgumentParser) -> None:
     valid_data = loaded_data["valid"].map(preprocess, num_proc=data_args.num_proc) if "valid" in loaded_data else None
 
     # [NOTE]: load metrics & set Trainer arguments
-    blue = load("evaluate-metric/bleu", cache_dir=model_args.cache)
+    bleu = load("evaluate-metric/bleu", cache_dir=model_args.cache)
     rouge = load("evaluate-metric/rouge", cache_dir=model_args.cache)
+    rouge_tokenizer: str = lambda sentence: sentence.split()
+
     collator = DataCollatorForSeq2Seq(tokenizer, model)
     callbacks = [WandbCallback] if os.getenv("WANDB_DISABLED") == "false" else None
+
+    valid_data = valid_data.train_test_split(0.02)["test"]
 
     trainer = Seq2SeqTrainer(
         model=model,
@@ -227,6 +231,11 @@ def predict(trainer: Seq2SeqTrainer, test_data: Dataset, gen_kwargs: Dict[str, A
     """
     trainer.args.predict_with_generate = True
     trainer.predict(test_data, **gen_kwargs)
+
+
+def hyperparameter_search(trainer: Seq2SeqTrainer, args: Namespace) -> None:
+    trainer.hyperparameter_search()
+    pass
 
 
 if __name__ == "__main__":
