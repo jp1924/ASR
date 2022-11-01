@@ -34,6 +34,7 @@
                 "--train_data=",
                 "--valid_data=",
                 "--output_dir=",
+                "--max_length=",
                 "--cache=",
                 "--task=",
                 "--do_train",

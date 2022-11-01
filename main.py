@@ -66,8 +66,8 @@ def main(parser: HfArgumentParser) -> None:
         label_input = input_values["sen_col"]
 
         # [NOTE]: Tokenizer에서 EOS토큰을 자동으로 붙여준다.
-        train_encoded = tokenizer(train_input, return_attention_mask=False, max_length=240)
-        label_encoded = tokenizer(label_input, return_attention_mask=False, max_length=240)
+        train_encoded = tokenizer(train_input, return_attention_mask=False, max_length=data_args.max_length)
+        label_encoded = tokenizer(label_input, return_attention_mask=False, max_length=data_args.max_length)
 
         train_encoded["input_ids"] = train_encoded["input_ids"][:-1]  # </eos> 재거
 
@@ -143,9 +143,9 @@ def main(parser: HfArgumentParser) -> None:
     # [NOTE]: load datasets & preprocess data
     data_files = dict()
     if train_args.do_train:
-        data_files.update({"train": [data_args.train_data]})
+        data_files.update({"train": [data_args.train_csv]})
     if train_args.do_predict or train_args.do_eval:
-        data_files.update({"valid": [data_args.valid_data]})
+        data_files.update({"valid": [data_args.valid_csv]})
 
     assert data_files is not {}, "please set args do_train, do_eval, do_predict!!!!!!!!"
     loaded_data = load_dataset("csv", data_files=data_files, cache_dir=model_args.cache)
@@ -229,11 +229,6 @@ def predict(trainer: Seq2SeqTrainer, test_data: Dataset, gen_kwargs: Dict[str, A
     """
     trainer.args.predict_with_generate = True
     trainer.predict(test_data, **gen_kwargs)
-
-
-def hyperparameter_search(trainer: Seq2SeqTrainer, args: Namespace) -> None:
-    trainer.hyperparameter_search()
-    pass
 
 
 if __name__ == "__main__":
