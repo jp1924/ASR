@@ -135,10 +135,13 @@ def main(parser: HfArgumentParser) -> None:
     model.resize_token_embeddings(len(tokenizer))
 
     # [NOTE]: set default taks_specifi_params & set gen_kwargs
-    config = set_task_specific_params(config) if config.task_specific_params is None else config
-    task = config.task_specific_params[model_args.task]
-    prompt = task.pop("prefix")
-    gen_kwargs = task
+    if train_args.do_predict:
+        config = set_task_specific_params(config) if config.task_specific_params is None else config
+        task = config.task_specific_params[model_args.task]
+        prompt = task.pop("prefix")
+        gen_kwargs = task
+    else:
+        prompt = model_args.task
 
     # [NOTE]: load datasets & preprocess data
     data_files = dict()
