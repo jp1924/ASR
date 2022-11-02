@@ -2,8 +2,10 @@
 
 script_path=""
 
+train_data=""
+valid_data=""
+
 model_name_or_path=""
-data_name_or_script=""
 output_dir=""
 cache_dir=""
 
@@ -23,21 +25,26 @@ export OMP_NUM_THREADS=8
 # T5 finetune script
 export OMP_NUM_THREADS=8
 python $script_path \
+    --run_name="" \
     --model_name=$model_name_or_path \
-    --data_name=$data_name_or_script \
+    --train_csv=$train_data \
+    --valid_csv=$valid_data \
     --output_dir=$output_dir \
     --cache=$cache_dir \
-    --per_device_train_batch_size = 10 \
-    --per_device_eval_batch_size = 4 \
-    --gradient_accumulation_steps = 2 \
-    --eval_accumulation_steps = 2 \
-    --learning_rate = 1e-5 \
-    --warmup_steps = 1000 \
-    --num_train_epochs = 2 \
-    --lr_scheduler_type = "linear" \
-    --logging_strategy = "steps" \
-    --logging_steps = 1 \
-    --evaluation_strategy = "steps" \
-    --eval_steps = 5000 \
+    --per_device_train_batch_size= \
+    --per_device_eval_batch_size= \
+    --gradient_accumulation_steps= \
+    --eval_accumulation_steps= \
+    --learning_rate= \
+    --warmup_steps= \
+    --num_train_epochs= \
+    --lr_scheduler_type= \
+    --logging_strategy= \
+    --logging_steps= \
+    --evaluation_strategy= \
+    --eval_steps= \
     --do_train true \
-    --num_proc = 6
+    --do_eval true \
+    --group_by_length true \
+    --fp16 true \
+    --num_proc=

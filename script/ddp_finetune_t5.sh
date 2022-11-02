@@ -2,9 +2,11 @@
 
 script_path=""
 
+train_data=""
+valid_data=""
+
 model_name_or_path=""
 checkpoint_path=""
-data_name_or_script=""
 output_dir=""
 cache_dir=""
 
@@ -28,25 +30,26 @@ python -m torch.distributed.launch --standalone --nnodes=1 --nproc_per_node=$num
     $script_path \
     --run_name="" \
     --model_name=$model_name_or_path \
-    --data_name=$data_name_or_script \
+    --train_csv=$train_data \
+    --valid_csv=$valid_data \
     --output_dir=$output_dir \
     --cache=$cache_dir \
-    --per_device_train_batch_size=12 \
-    --per_device_eval_batch_size=4 \
-    --gradient_accumulation_steps=2 \
-    --eval_accumulation_steps=2 \
-    --learning_rate=2e-5 \
-    --warmup_steps=1000 \
-    --num_train_epochs=2 \
-    --lr_scheduler_type="linear" \
-    --logging_strategy="steps" \
-    --logging_steps=50 \
-    --evaluation_strategy="steps" \
-    --eval_steps=1000 \
-    --save_strategy="steps" \
-    --save_steps=1000 \
-    --do_train \
-    --do_eval \
-    --group_by_length \
-    --fp16 \
-    --num_proc=10
+    --per_device_train_batch_size= \
+    --per_device_eval_batch_size= \
+    --gradient_accumulation_steps= \
+    --eval_accumulation_steps= \
+    --learning_rate= \
+    --warmup_steps= \
+    --num_train_epochs= \
+    --lr_scheduler_type= \
+    --logging_strategy= \
+    --logging_steps= \
+    --evaluation_strategy= \
+    --eval_steps= \
+    --save_strategy= \
+    --save_steps= \
+    --do_train true \
+    --do_eval true \
+    --group_by_length true \
+    --fp16 true \
+    --num_proc=
