@@ -4,6 +4,7 @@ datasets==2.6.1
 evaluate==0.3.0
 rouge_score>=0.1.2
 wandb==0.13.4
+glances[gpu]
 black
 flake8
 absl-py
