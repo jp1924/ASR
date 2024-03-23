@@ -175,26 +175,27 @@ class KrespSpeech(GeneratorBasedBuilder):
         ]
 
     def _generate_examples(self, filepath: List[Path], split: str):
-        source_ls = [ZipFile(x) for x in filepath if "[원천]" in str(x)]
-        label_ls = [ZipFile(x) for x in filepath if "[라벨]" in str(x)]
+        source_ls = [ZipFile(x) for x in filepath if "원천데이터" in str(x)]
+        label_ls = [ZipFile(x) for x in filepath if "라벨데이터" in str(x)]
 
-        source_ls = natsorted(source_ls)
-        label_ls = natsorted(label_ls)
+        source_ls = natsorted(source_ls, key=lambda x: x.filename)
+        label_ls = natsorted(label_ls, key=lambda x: x.filename)
 
+        idx = 0
         for source_zip, label_zip in zip(source_ls, label_ls):
-            source_zip = [x for x in source_zip.filelist if not x.is_dir()]
-            label_zip = [x for x in label_zip.filelist if not x.is_dir()]
+            source_zip_file_info = [x for x in source_zip.filelist if not x.is_dir()]
+            label_zip_file_info = [x for x in label_zip.filelist if not x.is_dir()]
 
             label_dict = dict()
-            for label_info in label_zip:
-                _id = label_info.filename.split("/")[0]
+            for label_info in label_zip_file_info:
+                _id = label_info.filename.split("/")[-2]
                 if _id not in label_dict:
                     label_dict[_id] = list()
                 label_dict[_id].append(label_info)
 
             source_dict = dict()
-            for source_info in source_zip:
-                _id = source_info.filename.split("/")[0]
+            for source_info in source_zip_file_info:
+                _id = source_info.filename.split("/")[-2]
                 source_dict[_id] = source_info
 
             label_dict = {
@@ -215,4 +216,6 @@ class KrespSpeech(GeneratorBasedBuilder):
                 }
                 data.update(meta)
 
-                yield (_id, data)
+                yield (idx, data)
+
+                idx += 1
