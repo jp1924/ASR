@@ -176,7 +176,7 @@ class KrespSpeech(GeneratorBasedBuilder):
 
     def _generate_examples(self, filepath: List[Path], split: str):
         source_ls = [ZipFile(x) for x in filepath if "원천데이터" in str(x)]
-        label_ls = [ZipFile(x) for x in filepath if "라벨데이터" in str(x)]
+        label_ls = [ZipFile(x) for x in filepath if "라벨링데이터" in str(x)]
 
         source_ls = natsorted(source_ls, key=lambda x: x.filename)
         label_ls = natsorted(label_ls, key=lambda x: x.filename)
