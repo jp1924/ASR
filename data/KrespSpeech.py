@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
 import os
-import re
 from pathlib import Path
 from tarfile import TarFile
 from typing import List
