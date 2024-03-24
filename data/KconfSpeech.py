@@ -61,7 +61,6 @@ class KconfSpeech(GeneratorBasedBuilder):
                             {
                                 "id": Value("string"),
                                 "gender": Value("string"),
-                                "type": Value("string"),
                                 "age": Value("string"),
                                 "residence": Value("string"),
                             }
@@ -217,7 +216,7 @@ class KconfSpeech(GeneratorBasedBuilder):
                     filename = wav_info.filename.split("/")[-1]
                     raw_meta = deepcopy(meta)
 
-                    raw_meta["dataSet"]["dialogs"] = dialogs[filename]
+                    raw_meta["dataSet"]["dialogs"] = [dialogs[filename]]
                     raw_meta["dataSet"]["typeInfo"]["speakers"] = [speakers[dialogs[filename]["speaker"]]]
 
                     sentence = label_zip.open(txt_info).read().decode("utf-8")
