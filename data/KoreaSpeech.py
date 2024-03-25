@@ -267,7 +267,7 @@ class KoreaSpeech(GeneratorBasedBuilder):
                 file.write(chunk)
 
     def concat_zip_part(self, unzip_dir: Path) -> None:
-        part_glob = Path(unzip_dir).rglob("*.zip.part*")
+        part_glob = Path(unzip_dir).rglob("*.tar.gz.part*")
 
         part_dict = dict()
         for part_path in part_glob:
@@ -302,7 +302,7 @@ class KoreaSpeech(GeneratorBasedBuilder):
 
             self.concat_zip_part(unzip_dir)
 
-        zip_file_path = list(unzip_dir.rglob("*.zip"))
+        zip_file_path = list(unzip_dir.rglob("*.tar.gz"))
 
         train_split = [x for x in zip_file_path if "Training" in str(x)]
         valid_split = [x for x in zip_file_path if "Validation" in str(x)]
@@ -335,10 +335,10 @@ class KoreaSpeech(GeneratorBasedBuilder):
 
             source_dict = dict()
             for source_info in source_info_ls:
-                _id = source_info.filename.split("/")[-1]
+                _id = source_info.name.split("/")[-1]
                 _id = _id.split(".")[0]
-                if _id not in source_info:
-                    source_info[_id] = list()
+                if _id not in source_dict:
+                    source_dict[_id] = list()
                 source_dict[_id].append(source_info)
 
             source_dict = {
@@ -346,9 +346,9 @@ class KoreaSpeech(GeneratorBasedBuilder):
             }
 
             for _, source_info in source_dict.items():
-                audio = source_zip.extractfile(source_dict["wav"]).read()
-                meta = json.loads(source_zip.extractfile(source_dict["json"]).read().decode("utf-8"))
-                sentence = source_zip.extractfile(source_dict["txt"]).read().decode("utf-8")
+                audio = source_zip.extractfile(source_info["wav"]).read()
+                meta = json.loads(source_zip.extractfile(source_info["json"]).read().decode("utf-8"))
+                sentence = source_zip.extractfile(source_info["txt"]).read().decode("utf-8")
 
                 metadata = meta.pop("metadata")
                 _id, metadata = tuple(metadata.split("_"))
