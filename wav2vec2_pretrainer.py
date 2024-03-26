@@ -18,6 +18,7 @@ if is_torch_tpu_available(check_device=False):
     import torch_xla.core.xla_model as xm
 
 
+# 이게 acclerate의 기능과 맞물려서 어떤 사이드 이팩트를 만들어 낼지 모르겠다.
 # copied_from: examples/pytorch/speech-pretraining/run_wav2vec2_pretraining_no_trainer.py
 def multiply_grads(params: torch.nn.Parameter, loss: torch.Tensor) -> None:
     """Multiplies grads by a constant *loss*."""
@@ -29,6 +30,11 @@ def multiply_grads(params: torch.nn.Parameter, loss: torch.Tensor) -> None:
 
 
 class Wav2Vec2Pretrainer(Trainer):
+    codevector_perplexity = 0.0
+    contrastive_loss = 0.0
+    diversity_loss = 0.0
+    percent_masked = 0.0
+
     def training_step(self, model: Module, inputs: Dict[str, Tensor | Any]) -> Tensor:
         model.train()
         inputs = self._prepare_inputs(inputs)
@@ -76,9 +82,11 @@ class Wav2Vec2Pretrainer(Trainer):
             model.set_gumbel_temperature(self.gumbel_temperature)
 
         loss = loss.detach()
-        contrastive_loss = outputs.contrastive_loss.detach() / num_losses
-        diversity_loss = outputs.diversity_loss.detach() / num_losses
-        percent_masked = num_losses / sub_attention_mask.sum()
+        self.contrastive_loss = outputs.contrastive_loss.detach() / num_losses
+        self.diversity_loss = outputs.diversity_loss.detach() / num_losses
+        self.codevector_perplexity = outputs.codevector_perplexity.detach()
+        self.percent_masked = num_losses / sub_attention_mask.sum()
+        self.num_losses = num_losses
 
         return loss / self.args.gradient_accumulation_steps
 
@@ -92,10 +100,24 @@ class Wav2Vec2Pretrainer(Trainer):
             # all_gather + mean() to get average loss over all processes
             tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
 
+            tr_contrastive_loss_scalar = self._nested_gather(self.contrastive_loss).sum().item()
+            tr_diversity_loss_scalar = self._nested_gather(self.diversity_loss).sum().item()
+            tr_percent_masked = self._nested_gather(self.percent_masked).sum().item()
+
             # reset tr_loss to zero
             tr_loss -= tr_loss
+            self.contrastive_loss -= self.contrastive_loss
+            self.diversity_loss -= self.diversity_loss
+            self.percent_masked -= self.percent_masked
+            # self.codevector_perplexity -= self.codevector_perplexity
 
             logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+            logs["constrast_loss"] = tr_contrastive_loss_scalar / self.num_losses
+            logs["div_loss"] = tr_diversity_loss_scalar / self.num_losses
+            logs["%_mask_idx"] = tr_percent_masked / self.accelerator.num_processes
+            logs["ppl"] = self.codevector_perplexity
+            logs["temp"] = self.gumbel_temperature
+
             if grad_norm is not None:
                 logs["grad_norm"] = grad_norm
             logs["learning_rate"] = self._get_learning_rate()
