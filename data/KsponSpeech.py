@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import io
 import os
 import re
 from pathlib import Path
@@ -6,7 +7,9 @@ from tarfile import TarFile
 from typing import List
 from zipfile import ZipFile
 
+import numpy as np
 import requests
+import soundfile as sf
 from datasets import (
     Audio,
     DatasetInfo,
@@ -64,6 +67,7 @@ class KsponSpeech(GeneratorBasedBuilder):
                 "id": Value("string"),
             }
         )
+        self.features = features
         return DatasetInfo(
             description=_DESCRIPTION,
             features=features,
@@ -142,19 +146,19 @@ class KsponSpeech(GeneratorBasedBuilder):
 
         # TODO: need clean code!!!
         audio_file_info = dict()
-        for zip_file_path in zip_file_path:
-            if not search_audio_zip.findall(str(zip_file_path)):
+        for path in zip_file_path:
+            if not search_audio_zip.findall(str(path)):
                 continue
 
-            zip_file = ZipFile(zip_file_path)
+            zip_file = ZipFile(path)
             audio_file_info.update(
                 {file.filename.split("/")[-1]: file for file in zip_file.filelist if "pcm" in file.filename}
             )
 
-        label_zip = [ZipFile(x) for x in zip_file_path if "KsponSpeech_scripts" in str(x)][0]
+        label_zip = [ZipFile(str(x)) for x in zip_file_path if "KsponSpeech_scripts" in str(str(x))][0]
 
         get_zip_file_name: str = lambda x: x.stem.split("/")[-1].replace(".zip", "")
-        audio_zip_dict = {get_zip_file_name(x): ZipFile(x) for x in zip_file_path if search_audio_zip.findall(x)}
+        audio_zip_dict = {get_zip_file_name(x): ZipFile(x) for x in zip_file_path if search_audio_zip.findall(str(x))}
 
         for zip_info in label_zip.filelist:
             label = label_zip.open(zip_info).read().decode("utf-8")
@@ -164,6 +168,9 @@ class KsponSpeech(GeneratorBasedBuilder):
 
             # NOTE: 파일 이름이 [train, dev, eval_clean, clean_other]로 되어 있음
             file_name = zip_info.filename.split(".")[-2]
+
+            if not file_name == "dev":
+                continue
 
             yield SplitGenerator(
                 name=NamedSplit(file_name),
@@ -188,8 +195,12 @@ class KsponSpeech(GeneratorBasedBuilder):
             # KsponSpeech_05/KsponSpeech_0623/KsponSpeech_622536.pcm
             # 0: 카테고리, 1: 데이터 폴더, 2: 파일
             path_segment = path.split("/")
-            audio = audio_zip_dict[path_segment[0]].open(audio_file_info[path_segment[-1]])
+            pcm_audio = audio_zip_dict[path_segment[0]].open(audio_file_info[path_segment[-1]]).read()
+            bytes_value = np.frombuffer(pcm_audio, dtype=np.int16).astype(np.float32) / 32767
 
-            data = {"audio": audio, "sentence": sentence, "id": path_segment[-1].replace(".pcm", "")}
+            buffer = io.BytesIO(bytes())
+            # ksponspeech는 무조건 고정임.
+            sf.write(buffer, bytes_value, 16000, self.info, format="wav")
+            data = {"audio": buffer.getvalue(), "sentence": sentence, "id": path_segment[-1].replace(".pcm", "")}
 
             yield (_id, data)
