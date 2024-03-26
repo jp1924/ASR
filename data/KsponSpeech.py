@@ -2,6 +2,7 @@
 import io
 import os
 import re
+import wave
 from pathlib import Path
 from tarfile import TarFile
 from typing import List
@@ -41,7 +42,7 @@ _CITATION = """\
 }
 """
 
-_DESCRIPTION = """\
+_DESCRIPTION = """
 KsponSpeech is a large-scale spontaneous speech corpus of Korean conversations. This corpus contains 969 hrs of general open-domain dialog utterances, spoken by about 2,000 native Korean speakers in a clean environment. All data were constructed by recording the dialogue of two people freely conversing on a variety of topics and manually transcribing the utterances. The transcription provides a dual transcription consisting of orthography and pronunciation, and disfluency tags for spontaneity of speech, such as filler words, repeated words, and word fragments. KsponSpeech is publicly available on an open data hub site of the Korea government. (https://aihub.or.kr/aidata/105)
 """
 
@@ -67,7 +68,6 @@ class KsponSpeech(GeneratorBasedBuilder):
                 "id": Value("string"),
             }
         )
-        self.features = features
         return DatasetInfo(
             description=_DESCRIPTION,
             features=features,
@@ -169,9 +169,6 @@ class KsponSpeech(GeneratorBasedBuilder):
             # NOTE: 파일 이름이 [train, dev, eval_clean, clean_other]로 되어 있음
             file_name = zip_info.filename.split(".")[-2]
 
-            if not file_name == "dev":
-                continue
-
             yield SplitGenerator(
                 name=NamedSplit(file_name),
                 gen_kwargs={
@@ -196,11 +193,21 @@ class KsponSpeech(GeneratorBasedBuilder):
             # 0: 카테고리, 1: 데이터 폴더, 2: 파일
             path_segment = path.split("/")
             pcm_audio = audio_zip_dict[path_segment[0]].open(audio_file_info[path_segment[-1]]).read()
-            bytes_value = np.frombuffer(pcm_audio, dtype=np.int16).astype(np.float32) / 32767
+            try:
 
-            buffer = io.BytesIO(bytes())
-            # ksponspeech는 무조건 고정임.
-            sf.write(buffer, bytes_value, 16000, self.info, format="wav")
+                bytes_value = np.frombuffer(pcm_audio, dtype=np.int16).astype(np.float32) / 32767
+                buffer = io.BytesIO(bytes())
+                # ksponspeech는 무조건 고정임.
+                sf.write(buffer, bytes_value, 16000, format="wav")
+            except ValueError:
+                buffer = io.BytesIO(bytes())
+
+                with wave.open(buffer, "wb") as wave_file:
+                    wave_file.setnchannels(1)
+                    wave_file.setsampwidth(16 // 8)
+                    wave_file.setframerate(16000)
+                    wave_file.writeframes(pcm_audio)
+
             data = {"audio": buffer.getvalue(), "sentence": sentence, "id": path_segment[-1].replace(".pcm", "")}
 
             yield (_id, data)
