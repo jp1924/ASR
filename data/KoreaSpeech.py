@@ -371,14 +371,25 @@ class KoreaSpeech(GeneratorBasedBuilder):
                 metadata = meta.pop("metadata")
                 _id, metadata = tuple(metadata.split("_"))
 
-                meta["subject"] = subject[metadata[0:2]]
-                meta["topic"] = topic[metadata[0:2]][metadata[2:4]]
-                meta["gender"] = gender[metadata[4:5]]
-                meta["generation"] = generation[metadata[5:6]]
-                meta["location"] = location[metadata[6:7]]
-                meta["dialect"] = dialect[metadata[7:8]]
-                meta["source"] = source[metadata[8:9]]
-                meta["quality"] = quality[metadata[9:10]]
+                try:
+                    meta["subject"] = subject[metadata[0:2]]
+                    meta["topic"] = topic[metadata[0:2]][metadata[2:4]]
+                    meta["gender"] = gender[metadata[4:5]]
+                    meta["generation"] = generation[metadata[5:6]]
+                    meta["location"] = location[metadata[6:7]]
+                    meta["dialect"] = dialect[metadata[7:8]]
+                    meta["source"] = source[metadata[8:9]]
+                    meta["quality"] = quality[metadata[9:10]]
+                except:
+                    # NOTE: 0599FA삭제삭제31 같은 데이터가 있음.
+                    meta["subject"] = ""
+                    meta["topic"] = ""
+                    meta["gender"] = ""
+                    meta["generation"] = ""
+                    meta["location"] = ""
+                    meta["dialect"] = ""
+                    meta["source"] = ""
+                    meta["quality"] = ""
 
                 data = {
                     "id": _id,
