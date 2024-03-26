@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 from tarfile import TarFile
+from zipfile import ZipFile, ZIP_DEFLATED
 from typing import List
 
 import requests
@@ -33,9 +34,7 @@ _DESCRIPTION = """\
 
 DATASET_KEY = "130"
 DOWNLOAD_URL = f"https://api.aihub.or.kr/down/{DATASET_KEY}.do"
-_HOMEPAGE = (
-    f"https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&aihubDataSe=realm&dataSetSn={DATASET_KEY}"
-)
+_HOMEPAGE = f"https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&aihubDataSe=realm&dataSetSn={DATASET_KEY}"
 
 _VERSION = "1.3.0"
 _DATANAME = "KoreaSpeech"
@@ -165,6 +164,7 @@ topic = {
 gender = {
     "M": "남",
     "F": "여",
+    "X": "",
 }
 generation = {
     "C": "유아",
@@ -214,9 +214,9 @@ class KoreaSpeech(GeneratorBasedBuilder):
                 "id": Value("string"),
                 "meta": {
                     "original": Value("string"),
-                    "start": Value("float16"),
-                    "end": Value("float16"),
-                    "length": Value("float16"),
+                    "start": Value("string"),
+                    "end": Value("string"),
+                    "length": Value("string"),
                     "subject": Value("string"),
                     "topic": Value("string"),
                     "gender": Value("string"),
@@ -284,6 +284,23 @@ class KoreaSpeech(GeneratorBasedBuilder):
                     byte_f.write(part_path.read_bytes())
                     os.remove(part_path)
 
+    def transfer_tar_to_zip(self, zip_file_path) -> None:
+        # tar file로 불러들이니깐 너무 오래 걸림.
+        for x in tqdm(zip_file_path, desc="transfer_to_zip"):
+            tarf = TarFile.open(name=x, mode="r|gz")
+            zip_path = x.parent.joinpath(f"""{x.name.replace(".tar.gz", "")}.zip""")
+            zipf = ZipFile(file=zip_path, mode="a", compression=ZIP_DEFLATED)
+            for m in tqdm(tarf):
+                if m.isdir():
+                    continue
+                f = tarf.extractfile(m)
+                fl = f.read()
+                fn = m.name
+                zipf.writestr(fn, fl)
+            tarf.close()
+            zipf.close()
+            os.remove(x)
+
     def _split_generators(self, dl_manager) -> List[SplitGenerator]:  # type: ignore
         cache_dir = Path(dl_manager.download_config.cache_dir)
 
@@ -301,9 +318,9 @@ class KoreaSpeech(GeneratorBasedBuilder):
                 os.remove(tar_file)
 
             self.concat_zip_part(unzip_dir)
+            self.transfer_tar_to_zip(list(unzip_dir.rglob("*.tar.gz")))
 
-        zip_file_path = list(unzip_dir.rglob("*.tar.gz"))
-
+        zip_file_path = list(unzip_dir.rglob("*.zip"))
         train_split = [x for x in zip_file_path if "Training" in str(x)]
         valid_split = [x for x in zip_file_path if "Validation" in str(x)]
 
@@ -326,29 +343,30 @@ class KoreaSpeech(GeneratorBasedBuilder):
 
     def _generate_examples(self, filepath: List[Path], split: str):
         # 원천데이터 안에 meta, label이 전부 들어가 있음.
-        source_ls = [TarFile.open(x) for x in filepath if "원천데이터" in str(x)]
-        source_ls = natsorted(source_ls, key=lambda x: x.name)
+        source_ls = [ZipFile(x) for x in filepath if "원천데이터" in str(x)]
+        source_ls = natsorted(source_ls, key=lambda x: x.filename)
 
         idx = 0
         for source_zip in source_ls:
-            source_info_ls = [x for x in source_zip if not x.isdir()]
+            source_info_ls = [x for x in source_zip.filelist if not x.is_dir()]
 
             source_dict = dict()
             for source_info in source_info_ls:
-                _id = source_info.name.split("/")[-1]
+                _id = source_info.filename.split("/")[-1]
                 _id = _id.split(".")[0]
                 if _id not in source_dict:
                     source_dict[_id] = list()
                 source_dict[_id].append(source_info)
 
             source_dict = {
-                _id: {info.name.split(".")[-1]: info for info in info_ls} for _id, info_ls in source_dict.items()
+                _id: {info.filename.split(".")[-1]: info for info in info_ls}
+                for _id, info_ls in source_dict.items()
             }
-
             for _, source_info in source_dict.items():
-                audio = source_zip.extractfile(source_info["wav"]).read()
-                meta = json.loads(source_zip.extractfile(source_info["json"]).read().decode("utf-8"))
-                sentence = source_zip.extractfile(source_info["txt"]).read().decode("utf-8")
+                # 여기 바꿔야 함.
+                audio = source_zip.open(source_info["wav"]).read()
+                meta = json.loads(source_zip.open(source_info["json"]).read().decode("utf-8"))
+                sentence = source_zip.open(source_info["txt"]).read().decode("utf-8")
 
                 metadata = meta.pop("metadata")
                 _id, metadata = tuple(metadata.split("_"))
@@ -370,4 +388,4 @@ class KoreaSpeech(GeneratorBasedBuilder):
                 data["meta"] = meta
 
                 yield (idx, data)
-                idx += 1
+                idx += 1  #
