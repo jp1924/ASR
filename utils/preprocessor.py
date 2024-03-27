@@ -1,5 +1,6 @@
 import re
 from typing import Callable, Literal
+from unicodedata import normalize
 
 import librosa
 import numpy as np
@@ -110,6 +111,7 @@ def unnormal_dual_transcript_extractor(
     return script
 
 
+# TODO: 단위를 맞춰주는게 필요한지는 테스트 필요
 def unit_system_normalize(script: str) -> str:
     script = percentage_regex.sub("%", script)
     script = kilo_meter_regex.sub("KM", script)
@@ -128,3 +130,22 @@ def librosa_silence_filter(audio: np.ndarray, filter_decibel: int = 30) -> np.nd
     filtered_audio = np.concatenate(split_audio)
 
     return filtered_audio
+
+
+def default_sentence_norm(sentence: str) -> str:
+    # KsponSpeech 기준
+    sentence = noise_mark_delete(sentence)
+    sentence = sentence.upper()
+
+    sentence = normal_dual_transcript_extractor(sentence, "left", unit_system_normalize)
+    sentence = unnormal_dual_transcript_extractor(sentence, "left", unit_system_normalize)
+
+    sentence = sentence.replace(":", "대")
+    sentence = sentence.replace("-", " ")
+
+    sentence = special_char_norm(sentence)
+    sentence = space_norm(sentence)
+
+    sentence = normalize("NFD", sentence)
+
+    return sentence
