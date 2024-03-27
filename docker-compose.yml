@@ -2,12 +2,12 @@ version: "1.0.0"
 services:
   train_container:
     container_name: wav2vec2-train
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     volumes:
-    - ./:/root/workspace
-    - ~/.cache:/root/.cache
+      - ./:/root/
+      - ~/.cache:/root/.cache
     tty: true
     shm_size: 126G
     environment:
@@ -19,5 +19,5 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count : all
-              capabilities: [gpu]
+              count: all
+              capabilities: [ gpu ]
