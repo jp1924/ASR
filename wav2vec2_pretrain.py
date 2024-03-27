@@ -27,19 +27,71 @@ from transformers import (
     HfArgumentParser,
     Wav2Vec2Config,
     Wav2Vec2FeatureExtractor,
+    Wav2Vec2CTCTokenizer,
     Wav2Vec2ForPreTraining,
+    Wav2Vec2Processor,
     is_wandb_available,
     set_seed,
 )
-from utils import Wav2Vec2PretrainingArguments
+from utils import Wav2Vec2PretrainingArguments, librosa_silence_filter, default_sentence_norm
 from wav2vec2_pretrainer import Wav2Vec2Pretrainer
 
 logger = get_logger(__name__)
 
+AUDIO_MIN_LENGTH = os.getenv("AUDIO_MIN_LENGTH", 3584)  # 이거 어떻게 계산 하더라?
+AUDIO_MAX_LENGTH = os.getenv("AUDIO_MAX_LENGTH", 448512)  # 이거 어떻게 계산 하더라?
+
 
 def main(train_args: Wav2Vec2PretrainingArguments):
+    # pretrain단에서 finetune에서 사용할 값을 전부 인코딩 하는 것을 목표로 함.
+    def preprocessor(example):
+        sentence_ls = example["sentence"]
+        sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
 
-    if is_wandb_available() and (("wandb" in train_args.report_to) and (train_args.local_rank == 0)):
+        audio_ls = example["audio"]
+        audio_ls = audio_ls if isinstance(audio_ls, list) else [audio_ls]
+        audio_ls = [audio["array"] for audio in audio_ls]
+
+        normalized_sentence_ls = list()
+        normalized_audio_ls = list()
+        length_ls = list()
+        for sentence, audio in zip(sentence_ls, audio_ls):
+            audio = librosa_silence_filter(audio)
+
+            if not audio:
+                continue
+
+            if not AUDIO_MIN_LENGTH <= audio.shape <= AUDIO_MAX_LENGTH:
+                continue
+
+            sentence = default_sentence_norm(sentence)
+
+            if not sentence:
+                continue
+
+            sentence = tokenizer(sentence)
+            label_length = len(sentence)
+
+            feature_length = model._get_feat_extract_output_lengths(audio.shape)
+
+            if label_length > feature_length:
+                continue
+
+            audio = feature_extractor(audio)["input_values"]
+
+            normalized_sentence_ls.append(sentence)
+            normalized_audio_ls.append(audio)
+            length_ls.append(audio.shape)
+
+        return {
+            "labels": normalized_sentence_ls,
+            "input_values": normalized_audio_ls,
+            "length": length_ls,
+        }
+
+    if is_wandb_available() and (
+        ("wandb" in train_args.report_to) and (train_args.local_rank == 0)
+    ):
         import wandb
 
         wandb.init(
@@ -49,10 +101,13 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             name=train_args.run_name,
             save_code=True,
         )
-
-    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(train_args.model_name_or_path)
     config = Wav2Vec2Config.from_pretrained(train_args.model_name_or_path)
     model = Wav2Vec2ForPreTraining(config)
+
+    # for finetune
+    tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(train_args.model_name_or_path)
+    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(train_args.model_name_or_path)
+    processor = Wav2Vec2Processor(feature_extractor, tokenizer)
 
     # NOTE: Trainer에서 자동으로 해줌, 하지만 확인을 위해 이렇게 선언 함.
     if train_args.gradient_checkpointing:
@@ -70,7 +125,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     trainer = Wav2Vec2Pretrainer(
         model=model,
         data_collator=collator,
-        tokenizer=feature_extractor,
+        tokenizer=processor,
         args=train_args,
     )
     if train_args.do_train:
