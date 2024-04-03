@@ -148,9 +148,6 @@ def default_sentence_norm(sentence: str) -> str:
 
     if filtered_language_regex.findall(sentence):
         return ""
-    # NOTE: Vocab에 허용되는 문자 이외의 뭔가가 남았다면, 이상한 데이터로 간주하고 필터링 함.
-    # if vocab_allow_regex.sub("", sentence):
-    #     return ""
 
     # NOTE: 느낌표나 물음표의 대부분은 문장이 끝났을 때 사용하게 됨. 그렇기 때문에 느낌표와 물음표는 마침표로 변환 함.
     sentence = sentence.replace("?", ".")
@@ -160,10 +157,13 @@ def default_sentence_norm(sentence: str) -> str:
     # 차라리 띄어쓰는게 더 나을 듯. 특수문자 옆에 띄어쓰기가 깉이 있는 경우 `{ ` -> `  `가 되어서 norm 될 수 있을 듯
     # 다만 이렇지 않은 경우를 함 봐야 알 듯
     sentence = special_chr_regex.sub(" ", sentence)
-    sentence = double_space_regex.sub(" ", sentence).strip()
 
+    # NOTE: Vocab에 허용되는 문자 이외의 뭔가가 남았다면, 이상한 데이터로 간주하고 필터링 함.
     if vocab_allow_regex.sub("", sentence):
         return ""
+
+    sentence = double_space_regex.sub(" ", sentence)
+    sentence = sentence.strip()
 
     sentence = normalize("NFD", sentence)
 
