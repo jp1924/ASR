@@ -26,6 +26,7 @@ def preprocessor(example):
 
 
 def main() -> None:
+
     vocab_file_path = "./vocab.json"
     save_dir_path = "/root/model"
 
@@ -40,7 +41,7 @@ def main() -> None:
     korea = korea.select_columns(["sentence"])
 
     datasets = concatenate_datasets([kspon, kconf, kresp, korea])
-    datasets = datasets.map(default_sentence_norm, batched=True, num_proc=4)
+    datasets = datasets.map(preprocessor, batched=True, num_proc=4)
     sentence = datasets["sentence"]
 
     vocab = sorted(set("".join(sentence)))
@@ -68,7 +69,7 @@ def main() -> None:
         do_lower_case=False,
         target_lang="ko",
     )
-    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+    feature_extractor = Wav2Vec2FeatureExtractor(
         feature_size=1,
         sampling_rate=16000,
         padding_value=0.0,
