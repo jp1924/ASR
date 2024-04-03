@@ -6,29 +6,53 @@ from transformers import TrainingArguments
 
 @dataclass
 class Wav2Vec2PretrainingArguments(TrainingArguments):
-    preprocessing_num_workers: int = field(
-        default=None, metadata={"help": "The number of processes to use for the preprocessing."}
+    # data
+    dataset_names: List[str] = field(
+        default=None,
+        etadata={"help": "The name of the dataset to use (via the datasets library)."},
     )
+    preprocessing_num_workers: int = field(
+        default=4,
+        metadata={"help": "The number of processes to use for the preprocessing."},
+    )
+    preprocessing_batch_size: int = field(
+        default=1000,
+        metadata={"help": "The number of processes to use for the preprocessing."},
+    )
+    preprocessing_batched: bool = field(
+        default=True,
+        metadata={"help": "The number of processes to use for the preprocessing."},
+    )
+    audio_column_name: str = field(
+        default="audio",
+        metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'audio'"},
+    )
+    sentence_column_name: str = field(
+        default="sentence",
+        metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'sentence'"},
+    )
+    min_duration_in_seconds: float = field(
+        default=3584.0,
+        metadata={"help": "Filter out audio files that are longer than `min_duration_in_seconds` seconds"},
+    )
+    max_duration_in_seconds: float = field(
+        default=448512.0,
+        metadata={"help": "Filter out audio files that are shorter than `max_duration_in_seconds` seconds"},
+    )
+    train_dataset_prefix: List[str] = field(default=None)
+    valid_dataset_prefix: List[str] = field(default=None)
+    test_dataset_prefix: List[str] = field(default=None)
+    train_cache_file_name: str = field(default=None, metadata={"help": "Path to the train cached file name"})
+    validation_cache_file_name: str = field(default=None, metadata={"help": "Path to the validation cached file name"})
     cache_dir: str = field(
         default=None,
         metadata={"help": "Where do you want to store the pretrained models downloaded from huggingface.co"},
     )
-    audio_column_name: str = field(
-        default="audio", metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'audio'"}
-    )
+
+    # model
     model_name_or_path: str = field(
         default=None,
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models.", "required": True},
-    )
-    train_cache_file_name: str = field(default=None, metadata={"help": "Path to the train cached file name"})
-    validation_cache_file_name: str = field(default=None, metadata={"help": "Path to the validation cached file name"})
-    output_dir: str = field(default=None, metadata={"help": "Where to store the final model."})
-    seed: int = field(default=0, metadata={"help": "A seed for reproducible training."})
-    max_duration_in_seconds: float = field(
-        default=5.0, metadata={"help": "Filter out audio files that are longer than `max_duration_in_seconds` seconds"}
-    )
-    min_duration_in_seconds: float = field(
-        default=3.0, metadata={"help": "Filter out audio files that are shorter than min_duration_in_seconds seconds"}
     )
 
     pad_to_multiple_of: int = field(
@@ -53,20 +77,4 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         metadata={
             "help": "Length of each vector mask span to mask along the time axis in the contrastive task. If omitted, will pull value from model config."
         },
-    )
-    dataset_names: List[str] = field(
-        default=None,
-        etadata={"help": "The name of the dataset to use (via the datasets library)."},
-    )
-    train_dataset_prefix: List[str] = field(default=None)
-    valid_dataset_prefix: List[str] = field(default=None)
-    test_dataset_prefix: List[str] = field(default=None)
-
-    min_duration_in_seconds: float = field(
-        default=3584.0,
-        metadata={"help": "Filter out audio files that are longer than `min_duration_in_seconds` seconds"},
-    )
-    max_duration_in_seconds: float = field(
-        default=448512.0,
-        metadata={"help": "Filter out audio files that are shorter than `max_duration_in_seconds` seconds"},
     )

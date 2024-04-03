@@ -45,11 +45,9 @@ logger = get_logger(__name__)
 
 
 def main(train_args: Wav2Vec2PretrainingArguments):
-    def preprocessor(example: Dict[str, Union[List[Any], List[List[Any]]]]) -> Dict[str, List[Any]]:
-        sentence_ls = example["sentence"]
+    def preprocessor(audio_ls, sentence_ls) -> Dict[str, List[Any]]:
         sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
 
-        audio_ls = example["audio"]
         audio_ls = audio_ls if isinstance(audio_ls, list) else [audio_ls]
         audio_ls = [audio["array"] for audio in audio_ls]
 
@@ -116,8 +114,10 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             dataset = dataset.map(
                 preprocessor,
                 num_proc=train_args.preprocessing_num_workers,
-                remove_columns=dataset.column_names,
+                input_columns=[train_args.audio_column_name, train_args.sentence_column_name],
                 load_from_cache_file=True,
+                batched=train_args.preprocessing_batched,
+                batch_size=train_args.preprocessing_batch_size,
             )
         for data_key in dataset:
             if data_key not in data_dict:
