@@ -172,6 +172,7 @@
                 "--save_strategy=no",
                 "--logging_strategy=steps",
                 "--fp16=true",
+                "--deepspeed=/root/workspace/ds_config/ZeRO_2.json"
             ]
         }
     ]
