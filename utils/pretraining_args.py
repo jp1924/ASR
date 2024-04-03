@@ -1,29 +1,11 @@
 from dataclasses import dataclass, field
+from typing import List
 
 from transformers import TrainingArguments
 
 
 @dataclass
 class Wav2Vec2PretrainingArguments(TrainingArguments):
-    dataset_name: str = field(
-        default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
-    )
-    dataset_config_names: list[str] = field(
-        default=None,
-        metadata={
-            "help": "The configuration names of the dataset to use (via the datasets library).",
-            "required": True,
-            "nargs": "+",
-        },
-    )
-    dataset_split_names: list[str] = field(
-        default=None,
-        metadata={
-            "help": "The names of the training data set splits to use (via the datasets library).",
-            "required": True,
-            "nargs": "+",
-        },
-    )
     preprocessing_num_workers: int = field(
         default=None, metadata={"help": "The number of processes to use for the preprocessing."}
     )
@@ -71,4 +53,20 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         metadata={
             "help": "Length of each vector mask span to mask along the time axis in the contrastive task. If omitted, will pull value from model config."
         },
+    )
+    dataset_names: List[str] = field(
+        default=None,
+        etadata={"help": "The name of the dataset to use (via the datasets library)."},
+    )
+    train_dataset_prefix: List[str] = field(default=None)
+    valid_dataset_prefix: List[str] = field(default=None)
+    test_dataset_prefix: List[str] = field(default=None)
+
+    min_duration_in_seconds: float = field(
+        default=3584.0,
+        metadata={"help": "Filter out audio files that are longer than `min_duration_in_seconds` seconds"},
+    )
+    max_duration_in_seconds: float = field(
+        default=448512.0,
+        metadata={"help": "Filter out audio files that are shorter than `max_duration_in_seconds` seconds"},
     )
