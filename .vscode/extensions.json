@@ -1,0 +1,18 @@
+{
+    "recommendations": [
+        "ms-python.Python",
+        "ms-python.isort",
+        "ms-python.Flake8",
+        "ms-python.debugpy",
+        "ms-python.black-formatter",
+        "DavidAnson.vscode-markdownlint",
+        "eamodio.gitlens",
+        "donjayamanne.githistory",
+        "mhutchie.git-graph",
+        "waderyan.gitblame",
+        "codezombiech.gitignore",
+        "jinsihou.diff-tool",
+        "MS-CEINTL.vscode-language-pack-ko",
+        "rogalmic.bash-debug",
+    ],
+}
