@@ -4,7 +4,6 @@ import torch
 from torch._tensor import Tensor
 from torch.nn.modules import Module
 from transformers import Trainer
-from transformers.trainer_pt_utils import smp_forward_backward
 from transformers.utils import (
     is_apex_available,
     is_sagemaker_mp_enabled,
@@ -16,6 +15,9 @@ if is_apex_available():
 
 if is_torch_tpu_available(check_device=False):
     import torch_xla.core.xla_model as xm
+
+if is_sagemaker_mp_enabled():
+    from transformers.trainer_pt_utils import smp_forward_backward
 
 
 # 이게 acclerate의 기능과 맞물려서 어떤 사이드 이팩트를 만들어 낼지 모르겠다.
