@@ -13,7 +13,7 @@ from transformers.utils import (
 if is_apex_available():
     from apex import amp
 
-if is_torch_xla_available(check_device=False):
+if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
 
 if is_sagemaker_mp_enabled():
