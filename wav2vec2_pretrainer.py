@@ -7,13 +7,13 @@ from transformers import Trainer
 from transformers.utils import (
     is_apex_available,
     is_sagemaker_mp_enabled,
-    is_torch_tpu_available,
+    is_torch_xla_available,
 )
 
 if is_apex_available():
     from apex import amp
 
-if is_torch_tpu_available(check_device=False):
+if is_torch_xla_available(check_device=False):
     import torch_xla.core.xla_model as xm
 
 if is_sagemaker_mp_enabled():
