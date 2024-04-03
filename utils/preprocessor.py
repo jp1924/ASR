@@ -1,10 +1,11 @@
+import math
 import re
-from copy import deepcopy
-from typing import Callable, Literal
+from typing import Callable, Literal, Optional
 from unicodedata import normalize
 
 import librosa
 import numpy as np
+from transformers import PretrainedConfig
 
 # 해당 모델은 한국어를 소리 그대로 전사하는 것에 목표가 있음
 # 전사된 문장에 중국어, 일본어가 들어가 있으면 정상적이지 않은 데이터라 간주하고 필터링 함.
@@ -168,3 +169,30 @@ def default_sentence_norm(sentence: str) -> str:
     sentence = normalize("NFD", sentence)
 
     return sentence
+
+
+def get_feat_extract_output_lengths(
+    input_lengths: int,
+    config: PretrainedConfig,
+    add_adapter: Optional[bool] = None,
+) -> int:
+    """
+    Computes the output length of the convolutional layers
+    """
+
+    add_adapter = config.add_adapter if add_adapter is None else add_adapter
+
+    def _conv_out_length(input_length, kernel_size, stride):
+        # 1D convolutional layer output length formula taken
+        # from https://pytorch.org/docs/stable/generated/torch.nn.Conv1d.html
+
+        return math.floor((input_length - kernel_size) / stride) + 1
+
+    for kernel_size, stride in zip(config.conv_kernel, config.conv_stride):
+        input_lengths = _conv_out_length(input_lengths, kernel_size, stride)
+
+    if add_adapter:
+        for _ in range(config.num_adapter_layers):
+            input_lengths = _conv_out_length(input_lengths, 1, config.adapter_stride)
+
+    return input_lengths
