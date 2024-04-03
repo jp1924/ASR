@@ -20,6 +20,7 @@ import os
 import datasets
 import torch
 from accelerate.logging import get_logger
+from data import DataCollatorForWav2Vec2Pretraining
 from datasets import DatasetDict, concatenate_datasets, load_dataset
 from setproctitle import setproctitle
 from transformers import (
@@ -35,11 +36,10 @@ from transformers import (
 from utils import (
     Wav2Vec2PretrainingArguments,
     default_sentence_norm,
+    get_feat_extract_output_lengths,
     librosa_silence_filter,
 )
 from wav2vec2_pretrainer import Wav2Vec2Pretrainer
-
-from data import DataCollatorForWav2Vec2Pretraining
 
 logger = get_logger(__name__)
 
@@ -48,7 +48,6 @@ AUDIO_MAX_LENGTH = os.getenv("AUDIO_MAX_LENGTH", 448512)  # 이거 어떻게 계
 
 
 def main(train_args: Wav2Vec2PretrainingArguments):
-    # pretrain단에서 finetune에서 사용할 값을 전부 인코딩 하는 것을 목표로 함.
     def preprocessor(example):
         sentence_ls = example["sentence"]
         sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
@@ -62,31 +61,31 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         length_ls = list()
         for sentence, audio in zip(sentence_ls, audio_ls):
             audio = librosa_silence_filter(audio)
+            audio_length = audio.shape[0]
 
-            if not audio:
+            if not audio.any():
                 continue
 
-            if not AUDIO_MIN_LENGTH <= audio.shape <= AUDIO_MAX_LENGTH:
+            if not AUDIO_MIN_LENGTH <= audio_length <= AUDIO_MAX_LENGTH:
                 continue
 
             sentence = default_sentence_norm(sentence)
-
             if not sentence:
                 continue
 
-            sentence = tokenizer(sentence)
+            sentence = tokenizer(sentence, return_attention_mask=False)["input_ids"]
             label_length = len(sentence)
 
-            feature_length = model._get_feat_extract_output_lengths(audio.shape)
-
+            # NOTE: for CTC loss
+            feature_length = get_feat_extract_output_lengths(audio_length, config)
             if label_length > feature_length:
                 continue
 
-            audio = feature_extractor(audio)["input_values"]
+            audio = feature_extractor(audio, sampling_rate=16000)["input_values"]
 
             normalized_sentence_ls.append(sentence)
             normalized_audio_ls.append(audio)
-            length_ls.append(audio.shape)
+            length_ls.append(audio_length)
 
         return {
             "labels": normalized_sentence_ls,
@@ -107,7 +106,6 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     config = Wav2Vec2Config.from_pretrained(train_args.model_name_or_path)
     model = Wav2Vec2ForPreTraining(config)
 
-    # for finetune
     tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(train_args.model_name_or_path)
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(train_args.model_name_or_path)
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
@@ -119,7 +117,6 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     collator = DataCollatorForWav2Vec2Pretraining(
         model=model,
         feature_extractor=feature_extractor,
-        padding=train_args.padding,
         pad_to_multiple_of=train_args.pad_to_multiple_of,
         mask_time_prob=train_args.mask_time_prob,
         mask_time_length=train_args.mask_time_length,
