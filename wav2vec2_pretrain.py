@@ -108,8 +108,8 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         model.gradient_checkpointing_enable()
 
     data_dict = dict()
-    for dataset in train_args.dataset_names:
-        dataset = load_dataset(dataset)
+    for dataset_name in train_args.dataset_names:
+        dataset = load_dataset(dataset_name)
         with train_args.main_process_first(desc="data preprocess"):
             dataset = dataset.map(
                 preprocessor,
@@ -118,6 +118,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
                 load_from_cache_file=True,
                 batched=train_args.preprocessing_batched,
                 batch_size=train_args.preprocessing_batch_size,
+                desc=dataset_name,
             )
         for data_key in dataset:
             if data_key not in data_dict:
