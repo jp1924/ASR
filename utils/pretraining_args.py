@@ -27,30 +27,16 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
     preprocessing_num_workers: int = field(
         default=None, metadata={"help": "The number of processes to use for the preprocessing."}
     )
-    overwrite_cache: bool = field(default=False, metadata={"help": "Overwrite the cached training and evaluation sets"})
-    preprocessing_only: bool = field(
-        default=False, metadata={"help": "Only run the preprocessing script to be cached for future use"}
-    )
     cache_dir: str = field(
         default=None,
         metadata={"help": "Where do you want to store the pretrained models downloaded from huggingface.co"},
     )
-    validation_split_percentage: int = field(
-        default=1,
-        metadata={
-            "help": "Percentage of training data that should be used for validation if no validation is present in dataset."
-        },
-    )
-    logging_steps: int = field(default=500, metadata={"help": "Number of steps between each logging"})
     audio_column_name: str = field(
         default="audio", metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'audio'"}
     )
     model_name_or_path: str = field(
         default=None,
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models.", "required": True},
-    )
-    config_name: str = field(
-        default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
     )
     train_cache_file_name: str = field(default=None, metadata={"help": "Path to the train cached file name"})
     validation_cache_file_name: str = field(default=None, metadata={"help": "Path to the validation cached file name"})
