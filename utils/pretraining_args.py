@@ -9,18 +9,20 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
     )
     dataset_config_names: list[str] = field(
+        default=None,
         metadata={
             "help": "The configuration names of the dataset to use (via the datasets library).",
             "required": True,
             "nargs": "+",
-        }
+        },
     )
     dataset_split_names: list[str] = field(
+        default=None,
         metadata={
             "help": "The names of the training data set splits to use (via the datasets library).",
             "required": True,
             "nargs": "+",
-        }
+        },
     )
     preprocessing_num_workers: int = field(
         default=None, metadata={"help": "The number of processes to use for the preprocessing."}
@@ -44,7 +46,8 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         default="audio", metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'audio'"}
     )
     model_name_or_path: str = field(
-        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models.", "required": True}
+        default=None,
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models.", "required": True},
     )
     config_name: str = field(
         default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
