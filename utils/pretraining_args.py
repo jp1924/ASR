@@ -42,8 +42,10 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
     train_dataset_prefix: List[str] = field(default=None)
     valid_dataset_prefix: List[str] = field(default=None)
     test_dataset_prefix: List[str] = field(default=None)
-    train_cache_file_name: str = field(default=None, metadata={"help": "Path to the train cached file name"})
-    validation_cache_file_name: str = field(default=None, metadata={"help": "Path to the validation cached file name"})
+    cache_file_name: str = field(
+        default=None,
+        metadata={"help": "Path to cached file name"},
+    )
     cache_dir: str = field(
         default=None,
         metadata={"help": "Where do you want to store the pretrained models downloaded from huggingface.co"},

@@ -111,12 +111,18 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     for dataset_name in train_args.dataset_names:
         dataset = load_dataset(dataset_name)
         with train_args.main_process_first(desc="data preprocess"):
+
+            if train_args.cache_file_name:
+                train_args.cache_file_name = {
+                    x: os.path.join(train_args.cache_dir, f"{x}_{train_args.cache_file_name}") for x in dataset
+                }
             dataset = dataset.map(
                 preprocessor,
                 num_proc=train_args.preprocessing_num_workers,
                 input_columns=[train_args.audio_column_name, train_args.sentence_column_name],
                 load_from_cache_file=True,
                 batched=train_args.preprocessing_batched,
+                cache_file_names=train_args.cache_file_name,
                 batch_size=train_args.preprocessing_batch_size,
                 desc=dataset_name,
             )
