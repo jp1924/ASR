@@ -9,7 +9,7 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
     # data
     dataset_names: List[str] = field(
         default=None,
-        etadata={"help": "The name of the dataset to use (via the datasets library)."},
+        metadata={"help": "The name of the dataset to use (via the datasets library)."},
     )
     preprocessing_num_workers: int = field(
         default=4,
