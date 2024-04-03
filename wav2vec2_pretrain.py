@@ -20,21 +20,26 @@ import os
 import datasets
 import torch
 from accelerate.logging import get_logger
-from data import DataCollatorForWav2Vec2Pretraining
 from datasets import DatasetDict, concatenate_datasets, load_dataset
 from setproctitle import setproctitle
 from transformers import (
     HfArgumentParser,
     Wav2Vec2Config,
-    Wav2Vec2FeatureExtractor,
     Wav2Vec2CTCTokenizer,
+    Wav2Vec2FeatureExtractor,
     Wav2Vec2ForPreTraining,
     Wav2Vec2Processor,
     is_wandb_available,
     set_seed,
 )
-from utils import Wav2Vec2PretrainingArguments, librosa_silence_filter, default_sentence_norm
+from utils import (
+    Wav2Vec2PretrainingArguments,
+    default_sentence_norm,
+    librosa_silence_filter,
+)
 from wav2vec2_pretrainer import Wav2Vec2Pretrainer
+
+from data import DataCollatorForWav2Vec2Pretraining
 
 logger = get_logger(__name__)
 
@@ -89,9 +94,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             "length": length_ls,
         }
 
-    if is_wandb_available() and (
-        ("wandb" in train_args.report_to) and (train_args.local_rank == 0)
-    ):
+    if is_wandb_available() and (("wandb" in train_args.report_to) and (train_args.local_rank == 0)):
         import wandb
 
         wandb.init(
