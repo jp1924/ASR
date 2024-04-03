@@ -18,7 +18,7 @@ RUN pip install -U pip wheel setuptools && \
     pip install bitsandbytes==0.41.3.post2 scipy==1.12.0 sentencepiece==0.1.99 deepspeed==0.13.1 wandb==0.16.3 && \
     pip install soundfile librosa jiwer && \
     pip install setproctitle glances[gpu] && \
-    pip install black flake8 isort && \
+    pip install black flake8 isort natsort && \
     pip install torch==2.1.0+cu121 torchvision==0.16.0+cu121 --index-url https://download.pytorch.org/whl/cu121 && \
     pip install flash-attn==2.5.2 
 
