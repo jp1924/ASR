@@ -1,9 +1,13 @@
 import re
+from copy import deepcopy
 from typing import Callable, Literal
 from unicodedata import normalize
 
 import librosa
 import numpy as np
+
+# 해당 모델은 한국어를 소리 그대로 전사하는 것에 목표가 있음
+# 전사된 문장에 중국어, 일본어가 들어가 있으면 정상적이지 않은 데이터라 간주하고 필터링 함.
 
 # bracket
 deliminator = r"[\/\?\|\<\>\.\:\;\"'\`\!]"  # NOTE: 원래는 "/"가 맞으나 전사 오류로 인해 ? : ! 가 들어가는 경우도 있음.
@@ -21,9 +25,13 @@ kilo_meter_regex = re.compile(r"(킬로미터)")
 
 # noise & special
 double_space_regex = re.compile("([ ]{2,})")
-special_chr_regex = re.compile(r"([\+\*\~\-\#\>\<\;\`\,\@\/\&])")
+special_chr_regex = re.compile(r"""([\@\#\$\^\&\*\~\`\|\-\_\=\+\;\:\'\"\,\<\>\/\{\}\[\]])""")
 noise_filter = re.compile(r"(u/|b/|l/|o/|n/|\*|\+)")
+bracket_detector = re.compile(r"(\(|\))")
 
+vocab_allow_regex = re.compile(r"[가-힣A-Z0-9\.\% ]")
+
+filtered_language_regex = re.compile(r"[一-龥々〆〤ァ-ヴーぁ-ゔ]")
 
 space_norm: str = lambda x: double_space_regex.sub(" ", x).strip()
 special_char_norm: str = lambda x: special_chr_regex.sub("", x)
@@ -56,13 +64,10 @@ def normal_dual_transcript_extractor(
 
         if not normal_dual_bracket_regex.search(transcript_section):
             raise ValueError(
-                "이중 전사 구문을 추출하는 과정에서 값이 이상하게 바뀌었습니다."
-                f"sentence: {transcript_section}"
+                "이중 전사 구문을 추출하는 과정에서 값이 이상하게 바뀌었습니다." f"sentence: {transcript_section}"
             )
 
-        extract_groups = (
-            transcript_norm(groups[select_side]) if transcript_norm else groups[select_side]
-        )
+        extract_groups = transcript_norm(groups[select_side]) if transcript_norm else groups[select_side]
 
         script = script[: start_idx + diff] + extract_groups + script[end_idx + diff :]
         diff = -(len(transcript_section)) + (len(extract_groups) + diff)
@@ -97,13 +102,10 @@ def unnormal_dual_transcript_extractor(
 
         if not unnormal_dual_bracket_regex.search(transcript_section):
             raise ValueError(
-                "이중 전사 구문을 추출하는 과정에서 값이 이상하게 바뀌었습니다."
-                f"sentence: {transcript_section}"
+                "이중 전사 구문을 추출하는 과정에서 값이 이상하게 바뀌었습니다." f"sentence: {transcript_section}"
             )
 
-        extract_groups = (
-            transcript_norm(groups[select_side]) if transcript_norm else groups[select_side]
-        )
+        extract_groups = transcript_norm(groups[select_side]) if transcript_norm else groups[select_side]
 
         script = script[: start_idx + diff] + extract_groups + script[end_idx + diff :]
         diff = -(len(transcript_section)) + (len(extract_groups) + diff)
@@ -134,17 +136,34 @@ def librosa_silence_filter(audio: np.ndarray, filter_decibel: int = 30) -> np.nd
 
 def default_sentence_norm(sentence: str) -> str:
     # KsponSpeech 기준
+    sentence = normalize("NFC", sentence)
     sentence = noise_mark_delete(sentence)
     sentence = sentence.upper()
 
     sentence = normal_dual_transcript_extractor(sentence, "left", unit_system_normalize)
     sentence = unnormal_dual_transcript_extractor(sentence, "left", unit_system_normalize)
 
-    sentence = sentence.replace(":", "대")
-    sentence = sentence.replace("-", " ")
+    if bracket_detector.findall(sentence):
+        return ""
 
-    sentence = special_char_norm(sentence)
-    sentence = space_norm(sentence)
+    if filtered_language_regex.findall(sentence):
+        return ""
+    # NOTE: Vocab에 허용되는 문자 이외의 뭔가가 남았다면, 이상한 데이터로 간주하고 필터링 함.
+    # if vocab_allow_regex.sub("", sentence):
+    #     return ""
+
+    # NOTE: 느낌표나 물음표의 대부분은 문장이 끝났을 때 사용하게 됨. 그렇기 때문에 느낌표와 물음표는 마침표로 변환 함.
+    sentence = sentence.replace("?", ".")
+    sentence = sentence.replace("!", ".")
+    sentence = sentence.replace(":", "대")
+
+    # 차라리 띄어쓰는게 더 나을 듯. 특수문자 옆에 띄어쓰기가 깉이 있는 경우 `{ ` -> `  `가 되어서 norm 될 수 있을 듯
+    # 다만 이렇지 않은 경우를 함 봐야 알 듯
+    sentence = special_chr_regex.sub(" ", sentence)
+    sentence = double_space_regex.sub(" ", sentence).strip()
+
+    if vocab_allow_regex.sub("", sentence):
+        return ""
 
     sentence = normalize("NFD", sentence)
 
