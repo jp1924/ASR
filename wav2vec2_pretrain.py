@@ -16,12 +16,12 @@
 """ Pre-Training a 🤗 Wav2Vec2 model on unlabeled audio data """
 
 import os
+from typing import Any, Dict, List, Union
 
-import datasets
 import torch
 from accelerate.logging import get_logger
 from data import DataCollatorForWav2Vec2Pretraining
-from datasets import DatasetDict, concatenate_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset
 from setproctitle import setproctitle
 from transformers import (
     HfArgumentParser,
@@ -43,12 +43,9 @@ from wav2vec2_pretrainer import Wav2Vec2Pretrainer
 
 logger = get_logger(__name__)
 
-AUDIO_MIN_LENGTH = os.getenv("AUDIO_MIN_LENGTH", 3584)  # 이거 어떻게 계산 하더라?
-AUDIO_MAX_LENGTH = os.getenv("AUDIO_MAX_LENGTH", 448512)  # 이거 어떻게 계산 하더라?
-
 
 def main(train_args: Wav2Vec2PretrainingArguments):
-    def preprocessor(example):
+    def preprocessor(example: Dict[str, Union[List[Any], List[List[Any]]]]) -> Dict[str, List[Any]]:
         sentence_ls = example["sentence"]
         sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
 
@@ -66,7 +63,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             if not audio.any():
                 continue
 
-            if not AUDIO_MIN_LENGTH <= audio_length <= AUDIO_MAX_LENGTH:
+            if not train_args.min_duration_in_seconds <= audio_length <= train_args.max_duration_in_seconds:
                 continue
 
             sentence = default_sentence_norm(sentence)
@@ -93,16 +90,14 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             "length": length_ls,
         }
 
-    if is_wandb_available() and (("wandb" in train_args.report_to) and (train_args.local_rank == 0)):
-        import wandb
+    def collect_dataset(prefix_ls: List[str]) -> List[Dataset]:
+        data_ls = list()
+        for prefix in prefix_ls:
+            check_key: str = lambda key: (prefix in key)
+            filter_data = [data_dict.pop(key) for key in list(data_dict.keys()) if check_key(key)]
+            data_ls.extend(filter_data)
+        return data_ls
 
-        wandb.init(
-            project=os.getenv("WANDB_PROJECT"),
-            entity=os.getenv("WANDB_ENTITY"),
-            group=os.getenv("WANDB_RUN_GROUP"),
-            name=train_args.run_name,
-            save_code=True,
-        )
     config = Wav2Vec2Config.from_pretrained(train_args.model_name_or_path)
     model = Wav2Vec2ForPreTraining(config)
 
@@ -113,6 +108,26 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     # NOTE: Trainer에서 자동으로 해줌, 하지만 확인을 위해 이렇게 선언 함.
     if train_args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
+
+    data_dict = dict()
+    for dataset in train_args.dataset_names:
+        dataset = load_dataset(dataset)
+        with train_args.main_process_first(desc="data preprocess"):
+            dataset = dataset.map(
+                preprocessor,
+                num_proc=train_args.preprocessing_num_workers,
+                remove_columns=dataset.column_names,
+                load_from_cache_file=True,
+            )
+        for data_key in dataset:
+            if data_key not in data_dict:
+                data_dict[data_key] = []
+
+            data_dict[data_key].append(dataset)
+
+    train_dataset = collect_dataset(train_args.train_dataset_prefix)
+    valid_dataset = collect_dataset(train_args.valid_dataset_prefix)
+    test_dataset = collect_dataset(train_args.test_dataset_prefix)
 
     collator = DataCollatorForWav2Vec2Pretraining(
         model=model,
@@ -125,15 +140,17 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     trainer = Wav2Vec2Pretrainer(
         model=model,
         data_collator=collator,
+        train_dataset=train_dataset,
+        eval_dataset=valid_dataset,
         tokenizer=processor,
         args=train_args,
     )
     if train_args.do_train:
         train(trainer)
     if train_args.do_eval:
-        predict(trainer)
+        valid(trainer)
     if train_args.do_predict:
-        predict(trainer)
+        predict(trainer, test_dataset)
 
 
 def train(trainer: Wav2Vec2Pretrainer) -> None:
@@ -145,7 +162,13 @@ def train(trainer: Wav2Vec2Pretrainer) -> None:
     trainer.save_state()
 
 
-def predict(trainer: Wav2Vec2Pretrainer) -> None:
+@torch.no_grad()
+def valid(trainer: Wav2Vec2Pretrainer) -> None:
+    pass
+
+
+@torch.no_grad()
+def predict(trainer: Wav2Vec2Pretrainer, test_dataset: Dataset) -> None:
     pass
 
 
@@ -158,5 +181,17 @@ if __name__ == "__main__":
 
     if train_args.run_name is not None:
         setproctitle(train_args.run_name)
+
+    check_wandb = ("wandb" in train_args.report_to) and (train_args.local_rank == 0)
+    if is_wandb_available() and check_wandb:
+        import wandb
+
+        wandb.init(
+            project=os.getenv("WANDB_PROJECT"),
+            entity=os.getenv("WANDB_ENTITY"),
+            group=os.getenv("WANDB_RUN_GROUP"),
+            name=train_args.run_name,
+            save_code=True,
+        )
 
     main(train_args)
