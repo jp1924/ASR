@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import io
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import List
 from zipfile import ZipFile
 
 import requests
+import soundfile as sf
 from datasets import (
     Audio,
     BuilderConfig,
@@ -17,8 +19,6 @@ from datasets import (
     SplitGenerator,
     Value,
 )
-import soundfile as sf
-import io
 from natsort import natsorted
 from tqdm import tqdm
 
@@ -37,7 +37,9 @@ _DESCRIPTION = """\
 
 DATASET_KEY = "120"
 DOWNLOAD_URL = f"https://api.aihub.or.kr/down/{DATASET_KEY}.do"
-_HOMEPAGE = f"https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&aihubDataSe=realm&dataSetSn={DATASET_KEY}"
+_HOMEPAGE = (
+    f"https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&aihubDataSe=realm&dataSetSn={DATASET_KEY}"
+)
 
 _VERSION = "1.2.0"
 _DATANAME = "JeollaSpeech"
@@ -46,9 +48,7 @@ _DATANAME = "JeollaSpeech"
 # https://github.com/huggingface/datasets/blob/dcd01046388fc052d37acc5a450bea69e3c57afc/templates/new_dataset_script.py#L65 참고해서 만듬.
 class JeollaSpeech(GeneratorBasedBuilder):
     BUILDER_CONFIGS = [
-        BuilderConfig(
-            name="STT", version=_VERSION, description="STT 학습에 맞춰서 최적화된 데이터"
-        ),
+        BuilderConfig(name="STT", version=_VERSION, description="STT 학습에 맞춰서 최적화된 데이터"),
         # VAD에 사용할 수 있지 않을까 해서 이렇게 남겨 둠.
         BuilderConfig(name="Original", version=_VERSION, description="순수 raw 데이터"),
     ]
@@ -263,11 +263,7 @@ class JeollaSpeech(GeneratorBasedBuilder):
         info_replacer = lambda info, key: info.filename.replace(key, "")
 
         label_zip = label_ls[0]
-        label_dict = {
-            info_replacer(info, ".json"): info
-            for info in label_zip.filelist
-            if "json" in info.filename
-        }
+        label_dict = {info_replacer(info, ".json"): info for info in label_zip.filelist if "json" in info.filename}
 
         id_counter = 0
         for audio_zip in source_ls:
@@ -294,11 +290,7 @@ class JeollaSpeech(GeneratorBasedBuilder):
         info_replacer = lambda info, key: info.filename.replace(key, "")
 
         label_zip = label_ls[0]
-        label_dict = {
-            info_replacer(info, ".json"): info
-            for info in label_zip.filelist
-            if "json" in info.filename
-        }
+        label_dict = {info_replacer(info, ".json"): info for info in label_zip.filelist if "json" in info.filename}
 
         id_counter = 0
         for audio_zip in source_ls:
