@@ -23,7 +23,6 @@
                 "CUDA_VISIBLE_DEVICE": "0",
                 "TORCHDYNAMO_DISABLE": "1",
                 "WANDB_DISABLED": "true",
-                "HF_DATASETS_CACHE": "/root/.cache",
             },
             "args": []
         },
@@ -40,7 +39,6 @@
                 "NCCL_IB_DISABLE": "1",
                 "WANDB_DISABLED": "true",
                 "OMP_NUM_THREADS": "4",
-                "HF_DATASETS_CACHE": "/root/.cache",
             },
             "justMyCode": false,
             "args": []
@@ -58,7 +56,6 @@
                 "NCCL_IB_DISABLE": "1",
                 "WANDB_DISABLED": "true",
                 "OMP_NUM_THREADS": "4",
-                "HF_DATASETS_CACHE": "/root/.cache",
             },
             "justMyCode": false,
             "args": []
@@ -74,13 +71,12 @@
                 "CUDA_VISIBLE_DEVICE": "0",
                 "TORCHDYNAMO_DISABLE": "1",
                 "WANDB_DISABLED": "true",
-                "HF_DATASETS_CACHE": "/root/.cache",
             },
             "args": [
                 "--output_dir=/root/output_dir",
                 "--run_name=wav2vec2-pretrain-debug",
                 "--model_name_or_path=/root/model",
-                "--preprocessing_num_workers=4",
+                "--preprocessing_num_workers=10",
                 "--overwrite_cache=false",
                 "--cache_dir=false",
                 "--do_train=true",
@@ -106,6 +102,8 @@
                 "--test_dataset_prefix",
                 "eval_clean",
                 "eval_other",
+                "--cache_file_name=preprocessor.arrow",
+                "--cache_dir=/root/.preprocessor_cache_dir",
             ]
         },
         {
@@ -121,7 +119,6 @@
                 "NCCL_IB_DISABLE": "1",
                 "WANDB_DISABLED": "true",
                 "OMP_NUM_THREADS": "4",
-                "HF_DATASETS_CACHE": "/root/.cache",
             },
             "justMyCode": false,
             "args": [
@@ -172,7 +169,6 @@
                 "NCCL_IB_DISABLE": "1",
                 "WANDB_DISABLED": "true",
                 "OMP_NUM_THREADS": "4",
-                "HF_DATASETS_CACHE": "/root/.cache",
             },
             "justMyCode": false,
             "args": [
