@@ -154,6 +154,8 @@
                 "--test_dataset_prefix",
                 "eval_clean",
                 "eval_other",
+                "--cache_file_name=preprocessor.arrow",
+                "--cache_dir=/root/.preprocessor_cache_dir",
             ]
         },
         {
@@ -204,6 +206,8 @@
                 "--test_dataset_prefix",
                 "eval_clean",
                 "eval_other",
+                "--cache_file_name=preprocessor.arrow",
+                "--cache_dir=/root/.preprocessor_cache_dir",
                 "--deepspeed=/root/workspace/ds_config/ZeRO_2.json"
             ]
         }
