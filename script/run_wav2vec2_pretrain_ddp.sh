@@ -1,10 +1,11 @@
-python3 /root/workspace/wav2vec2_pretrain.py \
+torchrun --nproc_per_node=4 /root/workspace/wav2vec2_pretrain.py \
     --output_dir=/root/output_dir \
     --run_name=wav2vec2-pretrain \
     --model_name_or_path=/root/model \
-    --preprocessing_num_workers=10 \
+    --preprocessing_num_workers=4 \
     --overwrite_cache=false \
     --cache_dir=false \
+    --seed=42 \
     --do_train=true \
     --do_eval=true \
     --do_predict=true \
