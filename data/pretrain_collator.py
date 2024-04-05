@@ -49,12 +49,17 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
 
     model: Wav2Vec2ForPreTraining
     feature_extractor: Wav2Vec2FeatureExtractor
+    return_tensors: str = "pt"
     padding: Union[bool, str] = "longest"
     pad_to_multiple_of: Optional[int] = None
     mask_time_prob: Optional[float] = 0.65
     mask_time_length: Optional[int] = 10
 
     def torch_call(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
+        # features가 2차원 리스트로 들어올 떄 feature_extractor에서 padding을 진행하지 못함. 따라서 이걸 1차원 리스트로 변경 함.
+        if len(features[0]["input_values"].shape) == 2:
+            features = [{"input_values": x["input_values"][0]} for x in features]
+
         # reformat list to dict and set to pytorch format
         batch = self.feature_extractor.pad(
             features,
