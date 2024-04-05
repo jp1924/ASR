@@ -46,6 +46,12 @@ from transformers.models.wav2vec2.modeling_wav2vec2 import (
     _compute_mask_indices,
     _sample_negative_indices,
 )
+from utils import (
+    Wav2Vec2PretrainingArguments,
+    default_sentence_norm,
+    get_feat_extract_output_lengths,
+    librosa_silence_filter,
+)
 
 logger = get_logger(__name__)
 
@@ -73,13 +79,13 @@ def parse_args():
     parser.add_argument(
         "--per_device_train_batch_size",
         type=int,
-        default=8,
+        default=4,
         help="Batch size (per device) for the training dataloader.",
     )
     parser.add_argument(
         "--per_device_eval_batch_size",
         type=int,
-        default=8,
+        default=4,
         help="Batch size (per device) for the evaluation dataloader.",
     )
     parser.add_argument(
@@ -385,7 +391,7 @@ def main():
 
         # DatasetDict이라서 이런식으로 해줘야 함.
         column_names = set(sum(dataset.column_names.values(), []))
-        with accelerator.main_process_first(desc="data preprocess"):
+        with accelerator.main_process_first():
             get_cache_path: str = lambda x: os.path.join(
                 "/root/.preprocessor_cache_dir", f"{name}-{x}_preprocessor.arrow"
             )
@@ -402,6 +408,7 @@ def main():
                 remove_columns=column_names,
                 desc=f"preprocess-{dataset_name}",
             )
+            dataset.set_format("torch")
         for data_key in dataset:
             if data_key not in data_dict:
                 data_dict[data_key] = []
@@ -576,8 +583,6 @@ def main():
 
                 if accelerator.is_local_main_process:
                     progress_bar.write(log_str)
-                    if is_wandb_available():
-                        wandb.log(train_logs)
 
             # save model every `args.saving_steps` steps
             if (step + 1) % (args.gradient_accumulation_steps * args.saving_steps) == 0:
