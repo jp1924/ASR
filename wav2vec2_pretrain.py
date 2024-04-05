@@ -91,7 +91,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             "length": length_ls,
         }
 
-    def collect_dataset(prefix_ls: List[str]) -> List[Dataset]:
+    def collect_dataset(prefix_ls: List[str]) -> Dataset:
         data_ls = list()
         for prefix in prefix_ls:
             check_key: str = lambda key: (prefix in key)
@@ -106,6 +106,13 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(train_args.model_name_or_path)
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(train_args.model_name_or_path)
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
+
+    # for intellisence(vscode)
+    model: Wav2Vec2ForPreTraining
+    config: Wav2Vec2Config
+    feature_extractor: Wav2Vec2FeatureExtractor
+    tokenizer: Wav2Vec2CTCTokenizer
+    processor: Wav2Vec2Processor
 
     # NOTE: Trainer에서 자동으로 해줌, 하지만 확인을 위해 이렇게 선언 함.
     if train_args.gradient_checkpointing:
@@ -153,18 +160,21 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     train_dataset = None
     if train_args.do_train:
         train_dataset = collect_dataset(train_args.train_dataset_prefix)
+        train_dataset.set_format("torch")
         logger.info("train_dataset")
         logger.info(train_dataset)
 
     valid_dataset = None
     if train_args.do_eval:
         valid_dataset = collect_dataset(train_args.valid_dataset_prefix)
+        valid_dataset.set_format("torch")
         logger.info("valid_dataset")
         logger.info(valid_dataset)
 
     test_dataset = None
     if train_args.do_predict:
         test_dataset = collect_dataset(train_args.test_dataset_prefix)
+        test_dataset.set_format("torch")
         logger.info("test_dataset")
         logger.info(test_dataset)
 
@@ -177,8 +187,8 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         model=model,
         feature_extractor=feature_extractor,
         pad_to_multiple_of=train_args.pad_to_multiple_of,
-        mask_time_prob=train_args.mask_time_prob,
-        mask_time_length=train_args.mask_time_length,
+        mask_time_prob=train_args.mask_time_prob or config.mask_time_prob,
+        mask_time_length=train_args.mask_time_length or config.mask_time_length,
     )
     if train_args.torch_compile:
         model = torch.compile(
