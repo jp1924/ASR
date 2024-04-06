@@ -47,6 +47,8 @@ class Wav2Vec2Pretrainer(Trainer):
         )
         num_losses = inputs["mask_time_indices"].sum()
 
+        percent_masked = num_losses / sub_attention_mask.sum()
+
         if is_sagemaker_mp_enabled():
             # NOTE: sagemaker에선 outputs가 나오질 않음! 참고
             loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
@@ -83,11 +85,12 @@ class Wav2Vec2Pretrainer(Trainer):
         else:
             model.set_gumbel_temperature(self.gumbel_temperature)
 
+        # TODO: 다른 loss에도 gradient accumulation이 적용이 되었는지는 모르겠음. 이건 확인 필요.
         loss = loss.detach()
-        self.contrastive_loss = outputs.contrastive_loss.detach() / num_losses
-        self.diversity_loss = outputs.diversity_loss.detach() / num_losses
+        self.contrastive_loss = outputs.contrastive_loss.detach()
+        self.diversity_loss = outputs.diversity_loss.detach()
         self.codevector_perplexity = outputs.codevector_perplexity.detach()
-        self.percent_masked = num_losses / sub_attention_mask.sum()
+        self.percent_masked = percent_masked.detach()
         self.num_losses = num_losses
 
         return loss / self.args.gradient_accumulation_steps
@@ -100,11 +103,10 @@ class Wav2Vec2Pretrainer(Trainer):
             logs: Dict[str, float] = {}
 
             # all_gather + mean() to get average loss over all processes
-            tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
-
             tr_contrastive_loss_scalar = self._nested_gather(self.contrastive_loss).sum().item()
             tr_diversity_loss_scalar = self._nested_gather(self.diversity_loss).sum().item()
             tr_percent_masked = self._nested_gather(self.percent_masked).sum().item()
+            tr_loss_scalar = self._nested_gather(tr_loss).sum().item()
 
             # reset tr_loss to zero
             tr_loss -= tr_loss
@@ -113,12 +115,12 @@ class Wav2Vec2Pretrainer(Trainer):
             self.percent_masked -= self.percent_masked
             # self.codevector_perplexity -= self.codevector_perplexity
 
-            logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
-            logs["constrast_loss"] = tr_contrastive_loss_scalar / self.num_losses
-            logs["div_loss"] = tr_diversity_loss_scalar / self.num_losses
-            logs["%_mask_idx"] = tr_percent_masked / self.accelerator.num_processes
-            logs["ppl"] = self.codevector_perplexity
-            logs["temp"] = self.gumbel_temperature
+            logs["loss"] = float((tr_loss_scalar * self.args.gradient_accumulation_steps) / self.num_losses)
+            logs["constrast_loss"] = float(tr_contrastive_loss_scalar / self.num_losses)
+            logs["div_loss"] = float(tr_diversity_loss_scalar / self.num_losses)
+            logs["%_mask_idx"] = float(tr_percent_masked / self.accelerator.num_processes)
+            logs["ppl"] = float(self.codevector_perplexity)
+            logs["temp"] = float(self.gumbel_temperature)
 
             if grad_norm is not None:
                 logs["grad_norm"] = grad_norm
