@@ -21,13 +21,15 @@ from typing import Any, Dict, List, Union
 import torch
 from data import DataCollatorForWav2Vec2Pretraining
 from datasets import Dataset, concatenate_datasets, load_dataset
+from models import Wav2Vec2ForPreTraining
 from setproctitle import setproctitle
+
+# Wav2Vec2ForPreTraining,
 from transformers import (
     HfArgumentParser,
     Wav2Vec2Config,
     Wav2Vec2CTCTokenizer,
     Wav2Vec2FeatureExtractor,
-    Wav2Vec2ForPreTraining,
     Wav2Vec2Processor,
     is_wandb_available,
 )
@@ -100,7 +102,10 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         return concatenate_datasets(data_ls[0])
 
     # load model, feature_extractor, tokenizer
-    config = Wav2Vec2Config.from_pretrained(train_args.model_name_or_path)
+    config = Wav2Vec2Config.from_pretrained(
+        train_args.model_name_or_path,
+        attn_implementation="flash_attention_2",
+    )
     model = Wav2Vec2ForPreTraining(config)
 
     tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(train_args.model_name_or_path)
