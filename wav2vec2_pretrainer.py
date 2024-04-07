@@ -108,15 +108,15 @@ class Wav2Vec2Pretrainer(Trainer):
 
             # all_gather + mean() to get average loss over all processes
             tr_contrastive_loss_scalar = (
-                self._nested_gather(self.global_outputs.contrastive_loss / self.global_num_losses).mean().item()
+                self._nested_gather(self.global_outputs.contrastive_loss / self.global_num_losses).sum().item()
             )
             tr_diversity_loss_scalar = (
-                self._nested_gather(self.global_outputs.diversity_loss / self.global_num_losses).mean().item()
+                self._nested_gather(self.global_outputs.diversity_loss / self.global_num_losses).sum().item()
             )
             tr_percent_masked = (
-                self._nested_gather(self.global_percent_masked / self.accelerator.num_processes).mean().item()
+                self._nested_gather(self.global_percent_masked / self.accelerator.num_processes).sum().item()
             )
-            tr_loss_scalar = self._nested_gather(self.global_outputs.loss / self.global_num_losses).mean().item()
+            tr_loss_scalar = self._nested_gather(self.global_outputs.loss / self.global_num_losses).sum().item()
 
             # reset tr_loss to zero
             tr_loss -= tr_loss
