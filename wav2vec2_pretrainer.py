@@ -106,6 +106,7 @@ class Wav2Vec2Pretrainer(Trainer):
 
             logs: Dict[str, float] = {}
 
+            # TODO: ctc reduction이 sum이냐 mean이냐에 따라 연산하는 방식이 달라질거임. 그거에 맞춰서 계산하는 방법을 구해야 할 듯
             # all_gather + mean() to get average loss over all processes
             tr_contrastive_loss_scalar = (
                 self._nested_gather(self.global_outputs.contrastive_loss / self.global_num_losses).sum().item()
