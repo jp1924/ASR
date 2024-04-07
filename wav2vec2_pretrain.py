@@ -31,6 +31,7 @@ from transformers import (
     Wav2Vec2CTCTokenizer,
     Wav2Vec2FeatureExtractor,
     Wav2Vec2Processor,
+    is_torch_xla_available,
     is_wandb_available,
 )
 from transformers import logging as hf_logging
@@ -45,6 +46,8 @@ from wav2vec2_pretrainer import Wav2Vec2Pretrainer
 
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
+
+GLOBAL_LOGGER = None
 
 
 def main(train_args: Wav2Vec2PretrainingArguments):
@@ -101,6 +104,35 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             data_ls.extend(filter_data)
         return concatenate_datasets(data_ls[0])
 
+    def set_wandb() -> None:
+        # TODO: 이건 나중에 args로 바꿀 것
+        GLOBAL_LOGGER.run.log_code(
+            "/root/workspace",
+            include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"),
+            exclude_fn=lambda path, root: os.path.relpath(path, root).startswith(".md")
+            or os.path.relpath(path, root).startswith(".yml")
+            or (".gitignore" in os.path.relpath(path, root))
+            or os.path.relpath(path, root).startswith(".vscode"),
+        )
+        # logging args
+        combined_dict = {**train_args.to_dict()}
+        if hasattr(model, "config") and model.config is not None:
+            model_config = model.config.to_dict()
+            combined_dict = {**model_config, **combined_dict}
+
+        GLOBAL_LOGGER.config.update(combined_dict, allow_val_change=True)
+
+        # set default metrics
+        if getattr(GLOBAL_LOGGER, "define_metric", None):
+            GLOBAL_LOGGER.define_metric("train/global_step")
+            GLOBAL_LOGGER.define_metric("*", step_metric="train/global_step", step_sync=True)
+
+        # set model watch
+        _watch_model = os.getenv("WANDB_WATCH", "false")
+        if not is_torch_xla_available() and _watch_model in ("all", "parameters", "gradients"):
+            GLOBAL_LOGGER.watch(model, log=_watch_model, log_freq=max(100, train_args.logging_steps))
+        GLOBAL_LOGGER.run._label(code="transformers_trainer")
+
     # load model, feature_extractor, tokenizer
     config = Wav2Vec2Config.from_pretrained(
         train_args.model_name_or_path,
@@ -122,6 +154,10 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     # NOTE: Trainer에서 자동으로 해줌, 하지만 확인을 위해 이렇게 선언 함.
     if train_args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
+
+    # set logger
+    if GLOBAL_LOGGER and (train_args.local_rank == 0):
+        set_wandb()
 
     # load dataset & preprocess
     data_dict = dict()
@@ -211,11 +247,13 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         tokenizer=processor,
         args=train_args,
     )
-    if train_args.do_train:
+    if train_args.do_train and train_dataset:
         train(trainer)
-    if train_args.do_eval:
+
+    if train_args.do_eval and valid_dataset:
         valid(trainer)
-    if train_args.do_predict:
+
+    if train_args.do_predict and test_dataset:
         predict(trainer, test_dataset)
 
 
@@ -260,5 +298,6 @@ if __name__ == "__main__":
             name=train_args.run_name,
             save_code=True,
         )
+        GLOBAL_LOGGER = wandb
 
     main(train_args)
