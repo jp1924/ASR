@@ -131,7 +131,7 @@ class Wav2Vec2Pretrainer(Trainer):
             logs["temp"] = round(self.gumbel_temperature, 4)
 
             if grad_norm is not None:
-                grad_norm = grad_norm if isinstance(grad_norm, float) else grad_norm.detach()
+                grad_norm = grad_norm if isinstance(grad_norm, float) else grad_norm.detach().item()
                 logs["grad_norm"] = round(grad_norm, 4)
             logs["learning_rate"] = self._get_learning_rate()
 
