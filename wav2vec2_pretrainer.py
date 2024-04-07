@@ -32,10 +32,9 @@ def multiply_grads(params: torch.nn.Parameter, loss: torch.Tensor) -> None:
 
 
 class Wav2Vec2Pretrainer(Trainer):
-    codevector_perplexity = 0.0
-    contrastive_loss = 0.0
-    diversity_loss = 0.0
-    percent_masked = 0.0
+    global_outputs = None
+    global_percent_masked = None
+    global_num_losses = None
 
     def training_step(self, model: Module, inputs: Dict[str, Tensor | Any]) -> Tensor:
         model.train()
@@ -87,11 +86,16 @@ class Wav2Vec2Pretrainer(Trainer):
 
         # TODO: 다른 loss에도 gradient accumulation이 적용이 되었는지는 모르겠음. 이건 확인 필요.
         loss = loss.detach()
-        self.contrastive_loss = outputs.contrastive_loss.detach()
-        self.diversity_loss = outputs.diversity_loss.detach()
-        self.codevector_perplexity = outputs.codevector_perplexity.detach()
-        self.percent_masked = percent_masked.detach()
-        self.num_losses = num_losses
+
+        # for logging
+        outputs.loss.detach()
+        outputs.contrastive_loss.detach()
+        outputs.diversity_loss.detach()
+        outputs.codevector_perplexity.detach()
+
+        self.global_outputs = outputs
+        self.global_percent_masked = percent_masked.detach()
+        self.global_num_losses = num_losses.detach().item()
 
         return loss / self.args.gradient_accumulation_steps
 
@@ -103,27 +107,31 @@ class Wav2Vec2Pretrainer(Trainer):
             logs: Dict[str, float] = {}
 
             # all_gather + mean() to get average loss over all processes
-            tr_contrastive_loss_scalar = self._nested_gather(self.contrastive_loss).sum().item()
-            tr_diversity_loss_scalar = self._nested_gather(self.diversity_loss).sum().item()
-            tr_percent_masked = self._nested_gather(self.percent_masked).sum().item()
-            tr_loss_scalar = self._nested_gather(tr_loss).sum().item()
+            tr_contrastive_loss_scalar = (
+                self._nested_gather(self.global_outputs.contrastive_loss / self.global_num_losses).mean().item()
+            )
+            tr_diversity_loss_scalar = (
+                self._nested_gather(self.global_outputs.diversity_loss / self.global_num_losses).mean().item()
+            )
+            tr_percent_masked = (
+                self._nested_gather(self.global_percent_masked / self.accelerator.num_processes).mean().item()
+            )
+            tr_loss_scalar = self._nested_gather(self.global_outputs.loss / self.global_num_losses).mean().item()
 
             # reset tr_loss to zero
             tr_loss -= tr_loss
-            self.contrastive_loss -= self.contrastive_loss
-            self.diversity_loss -= self.diversity_loss
-            self.percent_masked -= self.percent_masked
             # self.codevector_perplexity -= self.codevector_perplexity
 
-            logs["loss"] = float((tr_loss_scalar * self.args.gradient_accumulation_steps) / self.num_losses)
-            logs["constrast_loss"] = float(tr_contrastive_loss_scalar / self.num_losses)
-            logs["div_loss"] = float(tr_diversity_loss_scalar / self.num_losses)
-            logs["%_mask_idx"] = float(tr_percent_masked / self.accelerator.num_processes)
-            logs["ppl"] = float(self.codevector_perplexity)
-            logs["temp"] = float(self.gumbel_temperature)
+            logs["loss"] = round((tr_loss_scalar), 4)
+            logs["constrast_loss"] = round(tr_contrastive_loss_scalar, 4)
+            logs["div_loss"] = round(tr_diversity_loss_scalar, 4)
+            logs["%_mask_idx"] = round(tr_percent_masked, 4)
+            logs["ppl"] = round(self.global_outputs.codevector_perplexity.item(), 4)
+            logs["temp"] = round(self.gumbel_temperature, 4)
 
             if grad_norm is not None:
-                logs["grad_norm"] = grad_norm
+                grad_norm = grad_norm if isinstance(grad_norm, float) else grad_norm.detach()
+                logs["grad_norm"] = round(grad_norm, 4)
             logs["learning_rate"] = self._get_learning_rate()
 
             self._total_loss_scalar += tr_loss_scalar
