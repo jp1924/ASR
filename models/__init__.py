@@ -1,4 +1,4 @@
-from wav2vec2.modeling_wav2vec2 import (
+from .wav2vec2.modeling_wav2vec2 import (
     Wav2Vec2ForAudioFrameClassification,
     Wav2Vec2ForCTC,
     Wav2Vec2ForMaskedLM,
