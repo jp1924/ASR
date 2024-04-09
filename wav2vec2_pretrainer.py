@@ -56,9 +56,12 @@ def multiply_grads(params: torch.nn.Parameter, loss: torch.Tensor) -> None:
 
 
 class Wav2Vec2Pretrainer(Trainer):
-    global_outputs = None
-    global_percent_masked = None
-    global_num_losses = None
+    contrastive_loss = 0.0
+    diversity_loss = 0.0
+    loss = 0.0
+    codevector_perplexity = 0
+    percent_masked = 0
+    num_losses = 0
 
     def training_step(self, model: Module, inputs: Dict[str, Tensor | Any]) -> Tensor:
         model.train()
@@ -91,13 +94,12 @@ class Wav2Vec2Pretrainer(Trainer):
             self.accelerator.backward(loss)
 
         # NOTE: https://github.com/huggingface/transformers/pull/13877#discussion_r723197919 참고
-
-        if self.accelerator.state.num_processes > 1:
-            num_losses = self.accelerator.gather_for_metrics(num_losses).sum()
-            gradient_multiplier = self.accelerator.state.num_processes / num_losses
-            multiply_grads(model.module.parameters(), gradient_multiplier)
-        else:
-            multiply_grads(model.parameters(), 1 / num_losses)
+        # if self.accelerator.state.num_processes > 1:
+        #     num_losses = self.accelerator.gather_for_metrics(num_losses).sum()
+        #     gradient_multiplier = self.accelerator.state.num_processes / num_losses
+        #     multiply_grads(model.module.parameters(), gradient_multiplier)
+        # else:
+        #     multiply_grads(model.parameters(), 1 / num_losses)
 
         self.gumbel_temperature = max(
             self.args.max_gumbel_temperature * self.args.gumbel_temperature_decay**self.state.global_step,
@@ -112,15 +114,16 @@ class Wav2Vec2Pretrainer(Trainer):
         loss = loss.detach()
 
         # for logging
-        outputs.loss.detach()
-        outputs.contrastive_loss.detach()
-        outputs.diversity_loss.detach()
-        outputs.codevector_perplexity.detach()
+        self.contrastive_loss += outputs.contrastive_loss.detach() / self.args.gradient_accumulation_steps
+        self.diversity_loss += outputs.diversity_loss.detach() / self.args.gradient_accumulation_steps
+        self.loss += outputs.loss.detach() / self.args.gradient_accumulation_steps
+        self.codevector_perplexity += outputs.codevector_perplexity.detach() / self.args.gradient_accumulation_steps
+        self.percent_masked += percent_masked.detach() / self.args.gradient_accumulation_steps
+        self.num_losses += num_losses.detach() / self.args.gradient_accumulation_steps
 
-        self.global_outputs = outputs
-        self.global_percent_masked = percent_masked.detach()
-        self.global_num_losses = num_losses.detach().item()
-
+        # 사실상 return하는 loss는 사용하지 않음
+        # inner_training_loop는 수정하기에는 리스크가 너무 큼.
+        # 최소한의 코드 수정을 요하기 위해 이런 방식을 사용함.
         return loss / self.args.gradient_accumulation_steps
 
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval):
@@ -132,26 +135,25 @@ class Wav2Vec2Pretrainer(Trainer):
 
             # TODO: ctc reduction이 sum이냐 mean이냐에 따라 연산하는 방식이 달라질거임. 그거에 맞춰서 계산하는 방법을 구해야 할 듯
             # all_gather + mean() to get average loss over all processes
-            tr_contrastive_loss_scalar = (
-                self._nested_gather(self.global_outputs.contrastive_loss / self.global_num_losses).sum().item()
-            )
-            tr_diversity_loss_scalar = (
-                self._nested_gather(self.global_outputs.diversity_loss / self.global_num_losses).sum().item()
-            )
-            tr_percent_masked = (
-                self._nested_gather(self.global_percent_masked / self.accelerator.num_processes).sum().item()
-            )
-            tr_loss_scalar = self._nested_gather(self.global_outputs.loss / self.global_num_losses).sum().item()
+            tr_contrastive_loss_scalar = self._nested_gather(self.contrastive_loss / self.num_losses)
+            tr_diversity_loss_scalar = self._nested_gather(self.diversity_loss / self.num_losses)
+            tr_percent_masked = self._nested_gather(self.percent_masked / self.accelerator.num_processes)
+            tr_perplexity = self._nested_gather(self.codevector_perplexity / self.accelerator.num_processes)
+            tr_loss_scalar = self._nested_gather(self.loss / self.num_losses)
 
             # reset tr_loss to zero
-            tr_loss -= tr_loss
-            # self.codevector_perplexity -= self.codevector_perplexity
+            self.contrastive_loss -= self.contrastive_loss
+            self.diversity_loss -= self.diversity_loss
+            self.loss -= self.loss
+            self.codevector_perplexity -= self.codevector_perplexity
+            self.percent_masked -= self.percent_masked
+            self.num_losses -= self.num_losses
 
-            logs["loss"] = round((tr_loss_scalar), 4)
-            logs["constrast_loss"] = round(tr_contrastive_loss_scalar, 4)
-            logs["div_loss"] = round(tr_diversity_loss_scalar, 4)
-            logs["%_mask_idx"] = round(tr_percent_masked, 4)
-            logs["ppl"] = round(self.global_outputs.codevector_perplexity.item(), 4)
+            logs["loss"] = round(tr_loss_scalar.sum().item(), 4)
+            logs["constrast_loss"] = round(tr_contrastive_loss_scalar.sum().item(), 4)
+            logs["div_loss"] = round(tr_diversity_loss_scalar.sum().item(), 4)
+            logs["%_mask_idx"] = round(tr_percent_masked.sum().item(), 4)
+            logs["ppl"] = round(tr_perplexity.sum().item(), 4)
             logs["temp"] = round(self.gumbel_temperature, 4)
 
             if grad_norm is not None:
@@ -253,12 +255,9 @@ class Wav2Vec2Pretrainer(Trainer):
 
             loss = outputs[0]
             codevector_perplexity = outputs[3]
-            contrastive_loss = outputs[6]
-            diversity_loss = outputs[7]
+            contrastive_loss = outputs[4]
+            diversity_loss = outputs[5]
             num_loss = inputs["mask_time_indices"].sum()
-
-        if prediction_loss_only:
-            return (loss, None, None, None, None)
 
         return (loss, codevector_perplexity, contrastive_loss, diversity_loss, num_loss)
 
@@ -536,23 +535,21 @@ class Wav2Vec2Pretrainer(Trainer):
         # To be JSON-serializable, we need to remove numpy types or zero-d tensors
         metrics = denumpify_detensorize(metrics)
 
-        # TODO: 만드는거 끝나면 삭제할 것
-        breakpoint()
-
         if all_losses is not None:
-            metrics[f"{metric_key_prefix}_loss"] = all_losses.sum().item()
+            metrics[f"{metric_key_prefix}_loss"] = round(all_losses.sum().item() / all_num_losses.sum().item(), 4)
 
         if all_codevector_perplexities is not None:
-            metrics[f"{metric_key_prefix}_ppl"] = all_codevector_perplexities.sum().item()
+            metrics[f"{metric_key_prefix}_ppl"] = round(all_codevector_perplexities.mean().item(), 4)
 
         if all_contrastive_losses is not None:
-            metrics[f"{metric_key_prefix}_contrastive_los"] = all_contrastive_losses.sum().item()
+            metrics[f"{metric_key_prefix}_contrastive_loss"] = round(
+                all_contrastive_losses.sum().item() / all_num_losses.sum().item(), 4
+            )
 
         if all_diversity_losses is not None:
-            metrics[f"{metric_key_prefix}_diversity_loss"] = all_diversity_losses.sum().item()
-
-        if all_num_losses is not None:
-            metrics[f"{metric_key_prefix}_num_losses"] = all_num_losses.sum().item()
+            metrics[f"{metric_key_prefix}_diversity_loss"] = round(
+                all_diversity_losses.sum().item() / all_num_losses.sum().item(), 4
+            )
 
         if hasattr(self, "jit_compilation_time"):
             metrics[f"{metric_key_prefix}_jit_compilation_time"] = self.jit_compilation_time
