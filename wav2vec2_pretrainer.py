@@ -94,12 +94,12 @@ class Wav2Vec2Pretrainer(Trainer):
             self.accelerator.backward(loss)
 
         # NOTE: https://github.com/huggingface/transformers/pull/13877#discussion_r723197919 참고
-        # if self.accelerator.state.num_processes > 1:
-        #     num_losses = self.accelerator.gather_for_metrics(num_losses).sum()
-        #     gradient_multiplier = self.accelerator.state.num_processes / num_losses
-        #     multiply_grads(model.module.parameters(), gradient_multiplier)
-        # else:
-        #     multiply_grads(model.parameters(), 1 / num_losses)
+        if self.accelerator.state.num_processes > 1:
+            num_losses = self.accelerator.gather_for_metrics(num_losses).sum()
+            gradient_multiplier = self.accelerator.state.num_processes / num_losses
+            multiply_grads(model.module.parameters(), gradient_multiplier)
+        else:
+            multiply_grads(model.parameters(), 1 / num_losses)
 
         self.gumbel_temperature = max(
             self.args.max_gumbel_temperature * self.args.gumbel_temperature_decay**self.state.global_step,
