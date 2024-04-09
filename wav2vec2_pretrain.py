@@ -108,11 +108,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         # TODO: 이건 나중에 args로 바꿀 것
         GLOBAL_LOGGER.run.log_code(
             "/root/workspace",
-            include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"),
-            exclude_fn=lambda path, root: os.path.relpath(path, root).startswith(".md")
-            or os.path.relpath(path, root).startswith(".yml")
-            or (".gitignore" in os.path.relpath(path, root))
-            or os.path.relpath(path, root).startswith(".vscode"),
+            include_fn=lambda path: path.endswith(".py") or path.endswith(".json"),
         )
         # logging args
         combined_dict = {**train_args.to_dict()}
@@ -144,7 +140,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(train_args.model_name_or_path)
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
 
-    # for intellisence(vscode)
+    # for vscode intellisence
     model: Wav2Vec2ForPreTraining
     config: Wav2Vec2Config
     feature_extractor: Wav2Vec2FeatureExtractor
@@ -177,6 +173,8 @@ def main(train_args: Wav2Vec2PretrainingArguments):
                 name = dataset_name.split("/")[-1]
                 cache_file_name = {x: get_cache_path(x) for x in dataset}
 
+            # NOTE: finetune에서 사용할 데이터 Pretrain에서 전처리 함
+            # 만약 순수 음성만 넣을 거라면 sentence 부분을 ""로 비워든 상태로 돌리면 정상적으로 진행 됨
             dataset = dataset.map(
                 preprocessor,
                 num_proc=train_args.preprocessing_num_workers,
@@ -231,6 +229,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         mask_time_prob=train_args.mask_time_prob or config.mask_time_prob,
         mask_time_length=train_args.mask_time_length or config.mask_time_length,
     )
+
     if train_args.torch_compile:
         model = torch.compile(
             model,
