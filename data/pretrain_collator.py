@@ -49,8 +49,8 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
 
     model: Wav2Vec2ForPreTraining
     feature_extractor: Wav2Vec2FeatureExtractor
-    return_tensors: str = "pt"
     padding: Union[bool, str] = "longest"
+    return_tensors: str = "pt"
     pad_to_multiple_of: Optional[int] = None
     mask_time_prob: Optional[float] = 0.65
     mask_time_length: Optional[int] = 10
@@ -65,7 +65,8 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
             features,
             padding=self.padding,
             pad_to_multiple_of=self.pad_to_multiple_of,
-            return_tensors="pt",
+            return_attention_mask=True,
+            return_tensors=self.return_tensors,
         )
 
         device = batch["input_values"].device
