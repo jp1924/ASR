@@ -21,27 +21,11 @@ from transformers import (
 )
 from transformers.integrations import WandbCallback
 from transformers.trainer_utils import EvalPrediction
-
+from trl import SFTTrainer
 from utils import DataArgument, ModelArgument, set_task_specific_params
 
 
-def main(parser: HfArgumentParser) -> None:
-    """_main_
-        학습이 시작되는 함수입니다. 이 함수는 크게
-        1. argument를 세팅
-        2. model, tokenizer, config를 로드
-        3. dataset 로드
-        4. dataset 전처리
-        5. metrics 로드
-        6. collator 로드
-        7. callback 로드
-        8. Trainer 세팅
-        9. 학습 시작
-        의 과정으로 구성되어 있습니다.
-    Args:
-        parser (HfArgumentParser): paser값을 전달받습니다.
-
-    """
+def main(train_args) -> None:
     train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
     setproctitle(train_args.run_name)
     set_seed(train_args.seed)
