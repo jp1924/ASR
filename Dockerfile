@@ -21,5 +21,3 @@ RUN pip install -U pip wheel setuptools && \
     pip install black flake8 isort natsort && \
     pip install torch==2.1.0+cu121 torchvision==0.16.0+cu121 --index-url https://download.pytorch.org/whl/cu121 && \
     pip install flash-attn==2.5.2 
-
-RUN ln -s /root/workspace/.vscode /root/.vscode
