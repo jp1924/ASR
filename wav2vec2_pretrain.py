@@ -51,6 +51,7 @@ GLOBAL_LOGGER = None
 
 
 def main(train_args: Wav2Vec2PretrainingArguments):
+
     def preprocessor(example: Dict[str, Union[List[Any], List[List[Any]]]]) -> Dict[str, List[Any]]:
         sentence_ls = example["sentence"]
         sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
@@ -228,6 +229,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         pad_to_multiple_of=train_args.pad_to_multiple_of,
         mask_time_prob=train_args.mask_time_prob or config.mask_time_prob,
         mask_time_length=train_args.mask_time_length or config.mask_time_length,
+        mask_time_min_masks=config.mask_time_min_masks,
     )
 
     if train_args.torch_compile:

@@ -54,6 +54,7 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
     pad_to_multiple_of: Optional[int] = None
     mask_time_prob: Optional[float] = 0.65
     mask_time_length: Optional[int] = 10
+    mask_time_min_masks: int = 0
 
     def torch_call(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         # features가 2차원 리스트로 들어올 떄 feature_extractor에서 padding을 진행하지 못함. 따라서 이걸 1차원 리스트로 변경 함.
@@ -77,7 +78,8 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
         mask_indices_seq_length = int(mask_indices_seq_length)
 
         # make sure that no loss is computed on padded inputs
-        if batch.get("attention_mask") is not None:
+        # evaluate에선 sub_attention_mask 사용을 안함. 그리고 없애는 처리도 하지 않기 때문에 애러가 발생함.
+        if batch.get("attention_mask") is not None and self.model.training:
             # compute real output lengths according to convolution formula
             batch["sub_attention_mask"] = self.model._get_feature_vector_attention_mask(
                 mask_indices_seq_length, batch["attention_mask"]
@@ -91,8 +93,11 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
             self.mask_time_prob,
             self.mask_time_length,
             attention_mask=batch.get("sub_attention_mask"),
+            min_masks=self.mask_time_min_masks,
         )
 
+        if not (mask_time_indices.sum(-1) - 1).all():
+            breakpoint()
         # sample negative indices
         sampled_negative_indices = _sample_negative_indices(
             features_shape,
