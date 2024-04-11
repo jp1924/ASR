@@ -15,7 +15,7 @@ RUN apt-get update && \
 # 파이썬 관련 유틸
 RUN pip install -U pip wheel setuptools && \
     pip install transformers==4.39.3 accelerate==0.29.2 datasets==2.18.0 evaluate==0.4.1 && \
-    pip install bitsandbytes==0.41.3.post2 scipy==1.12.0 sentencepiece==0.2.0 deepspeed==0.14.0 wandb==0.16.6 && \
+    pip install trl==0.8.1 bitsandbytes==0.41.3.post2 scipy==1.12.0 sentencepiece==0.2.0 deepspeed==0.14.0 wandb==0.16.6 && \
     pip install soundfile librosa jiwer && \
     pip install setproctitle glances[gpu] && \
     pip install black flake8 isort natsort && \
