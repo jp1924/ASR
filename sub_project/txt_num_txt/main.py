@@ -1,163 +1,115 @@
+import json
 import os
+from pathlib import Path
 
-# for type annotation
-from argparse import Namespace
-from typing import Any, Dict, Tuple, Union
-
-import numpy as np
-import torch
 from datasets import Dataset, load_dataset
 from evaluate import load
+from peft import PeftConfig
+from peft.utils import get_peft_model_state_dict
 from setproctitle import setproctitle
 from transformers import (
-    DataCollatorForSeq2Seq,
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
     HfArgumentParser,
+    LlamaConfig,
+    LlamaForCausalLM,
     Seq2SeqTrainer,
-    Seq2SeqTrainingArguments,
-    T5Config,
-    T5ForConditionalGeneration,
-    T5TokenizerFast,
-    set_seed,
+    deepspeed,
+    is_torch_xla_available,
+    is_wandb_available,
 )
-from transformers.integrations import WandbCallback
-from transformers.trainer_utils import EvalPrediction
+from transformers import logging as hf_logging
+from transformers import set_seed
 from trl import SFTTrainer
-from utils import DataArgument, ModelArgument, set_task_specific_params
+from utils import TNTTrainingArguments
+
+hf_logging.set_verbosity_info()
+logger = hf_logging.get_logger("transformers")
+
+GLOBAL_LOGGER = None
 
 
-def main(train_args) -> None:
-    train_args, model_args, data_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
-    setproctitle(train_args.run_name)
-    set_seed(train_args.seed)
+def main(train_args: TNTTrainingArguments) -> None:
+    def preprocess():
+        return
 
-    assert model_args.task is not None, "Must set model task, please insert your prompt!!"
+    def set_wandb() -> None:
+        # TODO: 이건 나중에 args로 바꿀 것
+        GLOBAL_LOGGER.run.log_code(
+            "/root/workspace",
+            include_fn=lambda path: path.endswith(".py") or path.endswith(".json"),
+        )
+        # logging args
+        combined_dict = {**train_args.to_dict()}
+        if hasattr(model, "config") and model.config is not None:
+            model_config = model.config.to_dict()
+            combined_dict = {**model_config, **combined_dict}
 
-    def preprocess(input_values: Dataset) -> dict:
-        """_preprocess_
-            순수 음절 문자열을 tokenizer를 이용해 정수로 바꾸는 함수 입니다.
-            이 함수는 datasets의 map 메소드로 부터 불러온 뒤 MultiProcessing을 이용해 처리됩니다.
+        GLOBAL_LOGGER.config.update(combined_dict, allow_val_change=True)
 
-        Args:
-            input_values (Dataset): MuliProcessing으로 부터 건내받은 Dataset을 건내받습니다.
+        # set default metrics
+        if getattr(GLOBAL_LOGGER, "define_metric", None):
+            GLOBAL_LOGGER.define_metric("train/global_step")
+            GLOBAL_LOGGER.define_metric("*", step_metric="train/global_step", step_sync=True)
 
-        Returns:
-            dict: dict값을 반환하며 dataset을 구성하는 columns과 동일한 이름의 key값이 반환됩니다
-                  만약 다른 이름의 key값이 들어가면 datasets에서 append됩니다.
-        """
+        # set model watch
+        _watch_model = os.getenv("WANDB_WATCH", "false")
+        if not is_torch_xla_available() and _watch_model in ("all", "parameters", "gradients"):
+            GLOBAL_LOGGER.watch(model, log=_watch_model, log_freq=max(100, train_args.logging_steps))
+        GLOBAL_LOGGER.run._label(code="transformers_trainer")
 
-        # prompt = "translation_num_to_text"
-        train_input = f"""{prompt}: {input_values["num_col"]}"""
-        label_input = input_values["sen_col"]
+    def get_model_init_kwargs() -> dict:
+        model_init_kwargs = {}
+        if train_args.quantization_config_path:
+            quantization_config_path_txt = Path(train_args.quantization_config_path).read_text()
+            quantization_config = json.loads(quantization_config_path_txt)
 
-        # [NOTE]: Tokenizer에서 EOS토큰을 자동으로 붙여준다.
-        train_encoded = tokenizer(train_input, return_attention_mask=False, max_length=data_args.max_length)
-        label_encoded = tokenizer(label_input, return_attention_mask=False, max_length=data_args.max_length)
+            quantization_config, unused_config = BitsAndBytesConfig.from_dict(
+                quantization_config,
+                return_unused_kwargs=True,
+            )
 
-        train_encoded["input_ids"] = train_encoded["input_ids"][:-1]  # </eos> 재거
+            logger.info("quantization_config")
+            logger.info(quantization_config)
+            logger.info("unused_config")
+            logger.info(unused_config)
 
-        result = {"input_ids": train_encoded["input_ids"], "labels": label_encoded["input_ids"]}
-        return result
+            model_init_kwargs["quantization_config"] = quantization_config
 
-    def metrics(evaluation_result: EvalPrediction) -> Dict[str, float]:
-        """_metrics_
-            evaluation과정에서 모델의 성능을 측정하기 위한 metric을 수행하는 함수 입니다.
-            이 함수는 Trainer에 의해 실행되며 Huggingface의 Evaluate 페키로 부터
-            각종 metric을 전달받아 계산한 뒤 결과를 반환합니다.
+        model_init_kwargs["use_cache"] = False
+        model_init_kwargs["device_map"] = train_args.device_map
+        model_init_kwargs["torch_dtype"] = train_args.torch_dtype
+        model_init_kwargs["use_auth_token"] = train_args.use_auth_token
+        model_init_kwargs["low_cpu_mem_usage"] = train_args.low_cpu_mem_usage
+        model_init_kwargs["trust_remote_code"] = train_args.trust_remote_code
+        model_init_kwargs["use_flash_attention_2"] = train_args.use_flash_attention_2
 
-        Args:
-            evaluation_result (EvalPrediction): Trainer.evaluation_loop에서 model을 통해 계산된
-            logits과 label을 전달받습니다.
+        return model_init_kwargs
 
-        Returns:
-            Dict[str, float]: metrics 계산결과를 dict로 반환합니다.
-        """
+    model_init_kwargs = get_model_init_kwargs()
+    config = AutoConfig.from_pretrained(train_args.model_name_or_path, use_cache=False)
+    model = AutoModelForCausalLM.from_pretrained(train_args.model_name_or_path, config=config, **model_init_kwargs)
+    tokenizer = AutoTokenizer.from_pretrained(train_args.model_name_or_path)
 
-        result = dict()
+    if GLOBAL_LOGGER and (train_args.local_rank == 0):
+        set_wandb()
 
-        predicts = evaluation_result.predictions
-        predicts = np.where(predicts != -100, predicts, tokenizer.pad_token_id)
-        decoded_preds = tokenizer.batch_decode(predicts, skip_special_tokens=True)
+    peft_config = None
+    if train_args.do_peft:
+        peft_config = PeftConfig.from_pretrained(train_args.peft_config_name_or_path)
 
-        labels = evaluation_result.label_ids
-        labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    train_data = None
+    valid_data = None
 
-        bleu_score = bleu._compute(decoded_preds, decoded_labels)
-        bleu_score.pop("precisions")
-
-        rouge_score = rouge._compute(decoded_preds, decoded_labels, tokenizer=rouge_tokenizer)
-
-        result.update(rouge_score)
-        result.update(bleu_score)
-
-        return result
-
-    def logits_for_metrics(logits: Union[Tuple, torch.Tensor], _) -> torch.Tensor:
-        """_logits_for_metrics_
-            Trainer.evaluation_loop에서 사용되는 함수로 logits를 argmax를 이용해
-            축소 시켜 공간복잡도를 줄이기 위한 목적으로 작성되었습니다.
-
-        Args:
-            logits (Union[Tuple, torch.Tensor]): Model을 거쳐서 나온 3차원 (bch, sqr, hdn)의 logits을 전달받습니다.
-            _ : label이 입력되는 부분이지만 사용되지 않기에 하이픈처리 했습니다.
-
-        Returns:
-            torch.Tensor: 차원을 축소한 뒤의 torch.Tensor를 반환합니다.
-        """
-        return_logits = logits[0].argmax(dim=-1)
-        return return_logits
-
-    # [NOTE]
-    # 원래라면 model_name_or_path지만 그러니 변수의 길이가 너무 길어져서 indentation발생한다.
-    # 그래서 일단 변수의 이름을 **name**으로 통일한다.
-
-    # [NOTE]: load model, tokenizer, config
-    tokenizer = T5TokenizerFast.from_pretrained(model_args.model_name, cache_dir=model_args.cache)
-    config_name = model_args.model_name if model_args.config_name is None else model_args.config_name
-    config = T5Config.from_pretrained(config_name, cache_dir=model_args.cache)
-    model = T5ForConditionalGeneration.from_pretrained(model_args.model_name, config=config, cache_dir=model_args.cache)
-    model.resize_token_embeddings(len(tokenizer))
-
-    # [NOTE]: set default taks_specifi_params & set gen_kwargs
-    if train_args.do_predict:
-        config = set_task_specific_params(config) if config.task_specific_params is None else config
-        task = config.task_specific_params[model_args.task]
-        prompt = task.pop("prefix")
-        gen_kwargs = task
-    else:
-        prompt = model_args.task
-
-    # [NOTE]: load datasets & preprocess data
-    data_files = dict()
-    if train_args.do_train:
-        data_files.update({"train": [data_args.train_csv]})
-    if train_args.do_predict or train_args.do_eval:
-        data_files.update({"valid": [data_args.valid_csv]})
-
-    assert data_files is not {}, "please set args do_train, do_eval, do_predict!!!!!!!!"
-    loaded_data = load_dataset("csv", data_files=data_files, cache_dir=model_args.cache)
-
-    train_data = loaded_data["train"].map(preprocess, num_proc=data_args.num_proc) if "train" in loaded_data else None
-    valid_data = loaded_data["valid"].map(preprocess, num_proc=data_args.num_proc) if "valid" in loaded_data else None
-
-    # [NOTE]: load metrics & set Trainer arguments
-    bleu = load("evaluate-metric/bleu", cache_dir=model_args.cache)
-    rouge = load("evaluate-metric/rouge", cache_dir=model_args.cache)
-    rouge_tokenizer: str = lambda sentence: sentence.split()
-
-    collator = DataCollatorForSeq2Seq(tokenizer, model)
-    callbacks = [WandbCallback] if os.getenv("WANDB_DISABLED") == "false" else None
-
-    trainer = Seq2SeqTrainer(
+    trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
+        peft_config=peft_config,
         train_dataset=train_data,
         eval_dataset=valid_data,
         args=train_args,
-        compute_metrics=metrics,
-        data_collator=collator,
-        callbacks=callbacks,
-        preprocess_logits_for_metrics=logits_for_metrics,
     )
 
     # [NOTE]: run train, eval, predict
@@ -166,63 +118,103 @@ def main(train_args) -> None:
     if train_args.do_eval:
         eval(trainer, valid_data)
     if train_args.do_predict:
-        predict(trainer, valid_data, gen_kwargs)
+        predict(trainer, valid_data)
 
 
-def train(trainer: Seq2SeqTrainer, args: Namespace) -> None:
-    """_train_
-        Trainer를 전달받아 Trainer.train을 실행시키는 함수입니다.
-        학습이 끝난 이후 학습 결과 그리고 최종 모델을 저장하는 기능도 합니다.
+def train(trainer: SFTTrainer) -> None:
+    # copied from peft.utils.get_peft_model_state_dict
+    def get_peft_state_maybe_zero_3(named_params, bias):
+        from deepspeed import zero
+        from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
-        만약 학습을 특정 시점에 재시작 하고 싶다면 Seq2SeqTrainingArgument의
-        resume_from_checkpoint을 True혹은 PathLike한 값을 넣어주세요.
+        def maybe_zero_3(param):
+            if hasattr(param, "ds_id"):
+                assert param.ds_status == ZeroParamStatus.NOT_AVAILABLE
+                with zero.GatheredParameters([param]):
+                    param = param.data.detach().cpu().clone()
+            else:
+                param = param.detach().cpu().clone()
+            return param
 
-        - huggingface.trainer.checkpoint
-        https://huggingface.co/docs/transformers/main_classes/trainer#checkpoints
+        if bias == "none":
+            to_return = {k: t for k, t in named_params if "lora_" in k}
+        elif bias == "all":
+            to_return = {k: t for k, t in named_params if "lora_" in k or "bias" in k}
+        elif bias == "lora_only":
+            to_return = {}
+            maybe_lora_bias = {}
+            lora_bias_names = set()
+            for k, t in named_params:
+                if "lora_" in k:
+                    to_return[k] = t
+                    bias_name = k.split("lora_")[0] + "bias"
+                    lora_bias_names.add(bias_name)
+                elif "bias" in k:
+                    maybe_lora_bias[k] = t
+            for k, t in maybe_lora_bias:
+                if bias_name in lora_bias_names:
+                    to_return[bias_name] = t
+        else:
+            raise NotImplementedError
+        to_return = {k: maybe_zero_3(v) for k, v in to_return.items()}
+        return to_return
 
-    Args:
-        trainer (Seq2SeqTrainer): Huggingface의 torch Seq2SeqTrainer를 전달받습니다.
-        args (Namespace): Seq2SeqTrainingArgument를 전달받습니다.
-    """
-    outputs = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    train_args = trainer.args
+    outputs = trainer.train(resume_from_checkpoint=train_args.resume_from_checkpoint)
     metrics = outputs.metrics
 
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
-    trainer.save_model(args.output_dir)
+    # NOTE: peft + zero3가 적용된 상태에서 어떻게 저장되는지 확인
+    trainer.save_model(train_args.output_dir)
+
+    if deepspeed.is_deepspeed_zero3_enabled():
+        # use deepspeed engine internal function to gather state dict
+        # state_dict_zero3 contains whole parameters of base and lora adapters
+        # we will not extract lora parameters since peft save_pretrained will do that
+        # https://github.com/huggingface/peft/blob/3714aa2fff158fdfa637b2b65952580801d890b2/src/peft/peft_model.py#L125
+        # https://github.com/huggingface/peft/blob/3714aa2fff158fdfa637b2b65952580801d890b2/src/peft/utils/save_and_load.py#L19
+        state_dict_zero3 = trainer.model_wrapped._zero3_consolidated_16bit_state_dict()
+        if train_args.local_rank == 0:
+            state_dict = state_dict_zero3
+    else:
+        # in other mode we use original code from fastchat team, to make sure our change is minimum
+        state_dict = get_peft_state_maybe_zero_3(trainer.model.named_parameters(), lora_args.bias)
+    if train_args.local_rank == 0:
+        trainer.model.save_pretrained(train_args.output_dir, state_dict=state_dict)
+        trainer.tokenizer.save_pretrained(train_args.output_dir)
 
 
-def eval(trainer: Seq2SeqTrainer, eval_data: Dataset) -> None:
-    """_eval_
-        Trainer를 전달받아 Trainer.eval을 실행시키는 함수입니다.
-    Args:
-        trainer (Seq2SeqTrainer): Huggingface의 torch Seq2SeqTrainer를 전달받습니다.
-        eval_data (Dataset): 검증을 하기 위한 Data를 전달받습니다.
-    """
-    trainer.evaluate(eval_data)
+def eval(trainer: SFTTrainer) -> None:
+    trainer.evaluate()
 
 
-def predict(trainer: Seq2SeqTrainer, test_data: Dataset, gen_kwargs: Dict[str, Any]) -> None:
-    """_predict_
-        Trainer를 전달받아 Trainer.predict을 실행시키는 함수입니다.
-        이때 Seq2SeqTrainer의 Predict이 실행되며 model.generator를 실행시키기 위해
-        arg값의 predict_with_generater값을 강제로 True로 변환시킵니다.
-
-        True로 변환시키면 model.generator에서 BeamSearch를 진행해 더 질이 좋은 결과물을 만들 수 있습니다.
-    Args:
-        trainer (Seq2SeqTrainer): Huggingface의 torch Seq2SeqTrainer를 전달받습니다.
-        test_data (Dataset): 검증을 하기 위한 Data를 전달받습니다.
-        gen_kwargs (Dict[str, Any]): model.generator를 위한 값들을 전달받습니다.
-    """
+def predict(trainer: Seq2SeqTrainer, test_data: Dataset) -> None:
     trainer.args.predict_with_generate = True
-    trainer.predict(test_data, **gen_kwargs)
+    trainer.predict(test_data)
 
 
 if __name__ == "__main__":
-    # example_source: https://github.com/huggingface/transformers/tree/main/examples/pytorch/translation
-    parser = HfArgumentParser([Seq2SeqTrainingArguments, ModelArgument, DataArgument])
-    # [NOTE]: check wandb env variable
-    # -> 환경 변수를 이용해 조작이 가능함.
-    #    https://docs.wandb.ai/guides/track/advanced/environment-variables
+    parser = HfArgumentParser([TNTTrainingArguments])
+    train_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
 
-    main(parser)
+    if train_args.seed is not None:
+        set_seed(train_args.seed)
+
+    if train_args.run_name is not None:
+        setproctitle(train_args.run_name)
+
+    check_wandb = ("wandb" in train_args.report_to) and (train_args.local_rank == 0)
+    if is_wandb_available() and check_wandb:
+        import wandb
+
+        wandb.init(
+            project=os.getenv("WANDB_PROJECT"),
+            entity=os.getenv("WANDB_ENTITY"),
+            group=os.getenv("WANDB_RUN_GROUP"),
+            name=train_args.run_name,
+            save_code=True,
+        )
+        GLOBAL_LOGGER = wandb
+
+    main(train_args)
