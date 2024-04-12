@@ -26,16 +26,25 @@ kilo_meter_regex = re.compile(r"(킬로미터)")
 
 # noise & special
 double_space_regex = re.compile("([ ]{2,})")
-special_chr_regex = re.compile(r"""([\@\#\$\^\&\*\~\`\|\-\_\=\+\;\:\'\"\,\<\>\/\{\}\[\]])""")
-noise_filter = re.compile(r"(u/|b/|l/|o/|n/|\*|\+)")
+special_char_regex = re.compile(r"""([\@\#\$\^\&\*\~\`\|\-\_\=\+\;\:\'\"\,\<\>\/\{\}\[\]])""")
+term_extract_regex = re.compile(r"\(@([^\(\)\/]+)\)")
+noise_filter_regex = re.compile(r"(u/|b/|l/|o/|n/|\*|\+|@웃음|@목청|@박수|@노래|/\(noise\)|/\(bgm\))")
 bracket_detector = re.compile(r"(\(|\))")
 
 vocab_allow_regex = re.compile(r"[가-힣A-Z0-9\.\% ]")
 
 filtered_language_regex = re.compile(r"[一-龥々〆〤ァ-ヴーぁ-ゔ]")
 
+# NOTE: 주요 영역별 회의 음성인식 데이터는 도메인 단어 혹은 전문단어를 ()/(idiom)과 같이 한다. 여기서 전문 단어를 추출하기 위해서 다음과 같은 정규식을 사용한다.
+unidentification_filter_regex = re.compile(
+    r"@이름[0-9]+|@상호명[0-9]+|@전화번호[0-9]+|@카드번호[0-9]+|@주민번호[0-9]+|@주소[0-9]+|@정당[0-9]+"
+)
+# re.compile(
+#     r"/\(noise\)|/\(bgm\)|@웃음|@목청|@박수|@노래|\{[^{ ]*\}|\(\([^()]*\)\)"
+# )
+
 space_norm: str = lambda x: double_space_regex.sub(" ", x).strip()
-special_char_norm: str = lambda x: special_chr_regex.sub("", x)
+special_char_norm: str = lambda x: special_char_regex.sub("", x)
 
 
 def normal_dual_transcript_extractor(
@@ -114,6 +123,21 @@ def unnormal_dual_transcript_extractor(
     return script
 
 
+def term_extractor(script: str) -> str:
+    bracket_iter = term_extract_regex.finditer(script)
+    select_side = 0
+    diff = 0
+    for idiom in bracket_iter:
+        groups = idiom.groups()
+        start_idx, end_idx = idiom.span()
+        transcript_section = script[start_idx + diff : end_idx + diff]
+
+        script = script[: start_idx + diff] + groups[select_side] + script[end_idx + diff :]
+        diff = -(len(transcript_section)) + (len(groups[0]) + diff)
+
+    return script
+
+
 # TODO: 단위를 맞춰주는게 필요한지는 테스트 필요
 def unit_system_normalize(script: str) -> str:
     script = percentage_regex.sub("%", script)
@@ -124,7 +148,11 @@ def unit_system_normalize(script: str) -> str:
 
 
 def noise_mark_delete(script: str) -> str:
-    return noise_filter.sub("", script)
+    return noise_filter_regex.sub("", script)
+
+
+def unidentification_delete(script: str) -> str:
+    return unidentification_filter_regex.sub("", script)
 
 
 def librosa_silence_filter(audio: np.ndarray, filter_decibel: int = 30) -> np.ndarray:
@@ -138,11 +166,20 @@ def librosa_silence_filter(audio: np.ndarray, filter_decibel: int = 30) -> np.nd
 def default_sentence_norm(sentence: str) -> str:
     # KsponSpeech 기준
     sentence = normalize("NFC", sentence)
+    if "idiom" in sentence:
+        # NOTE: idiom 어노테이션 개같이 되어 있어서 그냥 전부 필터링 함.
+        # 할꺼면 일관되게 하던지 (.)/(idiom)하고 (idiom)/(.)이게 뭐냐 도대체 짜피 전채 문장에서 54583 정도 밖에 안되서 필터링 하기로 함.
+        return ""
+
     sentence = noise_mark_delete(sentence)
+    sentence = unidentification_delete(sentence)
+
     sentence = sentence.upper()
 
     sentence = normal_dual_transcript_extractor(sentence, "left", unit_system_normalize)
     sentence = unnormal_dual_transcript_extractor(sentence, "left", unit_system_normalize)
+
+    sentence = term_extractor(sentence)
 
     if bracket_detector.findall(sentence):
         return ""
@@ -157,7 +194,7 @@ def default_sentence_norm(sentence: str) -> str:
 
     # 차라리 띄어쓰는게 더 나을 듯. 특수문자 옆에 띄어쓰기가 깉이 있는 경우 `{ ` -> `  `가 되어서 norm 될 수 있을 듯
     # 다만 이렇지 않은 경우를 함 봐야 알 듯
-    sentence = special_chr_regex.sub(" ", sentence)
+    sentence = special_char_regex.sub(" ", sentence)
 
     # NOTE: Vocab에 허용되는 문자 이외의 뭔가가 남았다면, 이상한 데이터로 간주하고 필터링 함.
     if vocab_allow_regex.sub("", sentence):
