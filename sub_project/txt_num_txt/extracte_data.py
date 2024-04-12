@@ -10,7 +10,7 @@ def main() -> None:
         for sentence in example:
             spelling, phonetic, sentence = get_transcript_pair(sentence)
 
-            if not number_regex.findall(spelling):
+            if not number_regex.findall(spelling) and english_regex.findall(spelling):
                 continue
 
             if number_regex.findall(phonetic):
