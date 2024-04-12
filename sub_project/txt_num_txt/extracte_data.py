@@ -1,41 +1,10 @@
 import json
 
 from datasets import concatenate_datasets, load_dataset
-from utils import english_regex, get_transcript_pair, number_regex
+from utils import preprocess_sentence
 
 
 def main() -> None:
-    def preprocessor(example):
-        data_ls = list()
-        for sentence in example:
-            spelling, phonetic, sentence = get_transcript_pair(sentence)
-
-            if not number_regex.findall(spelling) and english_regex.findall(spelling):
-                continue
-
-            if number_regex.findall(phonetic):
-                continue
-
-            if english_regex.findall(phonetic):
-                continue
-
-            if ("(" in spelling) or (")" in spelling):
-                continue
-
-            if ("(" in phonetic) or (")" in phonetic):
-                continue
-
-            if not spelling:
-                continue
-            data = {
-                "spelling": spelling,
-                "phonetic": phonetic,
-                "sentence": sentence,
-            }
-
-            data_ls.append(data)
-        return data_ls
-
     dataset_name = [
         "jp1924/KoreaSpeech",
         "jp1924/KsponSpeech",
@@ -53,7 +22,7 @@ def main() -> None:
 
     sentence = [x for x in datasets["sentence"] if ")/(" in x]
 
-    sentence = preprocessor(sentence)
+    sentence = preprocess_sentence(sentence)
 
     save_path = "/root/tnt_data.json"
     with open(save_path, "w", encoding="utf-8") as f:
@@ -62,7 +31,3 @@ def main() -> None:
 
 if "__main__" in __name__:
     main()
-
-"아니 2개가 뭘 필요해 (네)/(니) 한 모금 나 한 모금 그러면 되지."
-"어/ 청년 CEO의 (24시)/(이십 사 시). 네. 그 하루를 함께 만나보시죠."
-"어/ 청년 CEO의 (24시)/(이십 사 시). 네. 그 하루를 함께 만나보시죠."
