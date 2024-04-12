@@ -24,7 +24,7 @@ class TNTTrainingArguments(TrainingArguments):
         metadata={"help": "The number of processes to use for the preprocessing."},
     )
     text_column_name: str = field(
-        default="audio",
+        default="text",
         metadata={"help": "Column in the dataset that contains text file path"},
     )
     train_dataset_prefix: List[str] = field(default=None)
@@ -45,16 +45,9 @@ class TNTTrainingArguments(TrainingArguments):
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models.", "required": True},
     )
 
-    quantization_config_path: str = field(
-        default=None,
-        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models.", "required": True},
-    )
+    quantization_config_path: str = field(default=None)
 
-    do_peft: bool = field(
-        default=False,
-        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models.", "required": True},
-    )
-    peft_config_name_or_path: str = field(default=None)
+    peft_config_name_or_path: str = field(default="")
     torch_dtype: str = field(default=None)
     low_cpu_mem_usage: bool = field(default=None)
     use_auth_token: str = field(default=None)
