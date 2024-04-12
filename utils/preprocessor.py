@@ -1,6 +1,6 @@
 import math
 import re
-from typing import Callable, Literal, Optional
+from typing import Callable, Literal, Optional, Tuple
 from unicodedata import normalize
 
 import librosa
@@ -18,10 +18,11 @@ unnormal_dual_bracket_regex = re.compile(rf"{right_bracket}{deliminator}{left_br
 normal_dual_bracket_regex = re.compile(r"\(([^()]+)\)/\(([^()]+)\)")
 
 # unit
-percentage_regex = re.compile(r"(프로|퍼센트|퍼)")
-meter_regex = re.compile(r"(미터)")
-centi_meter_regex = re.compile(r"(센치|센티|센치미터|센티미터)")
-kilo_meter_regex = re.compile(r"(킬로미터)")
+percentage_regex = re.compile(r"[0-9 ](퍼센트|프로|퍼)")
+milli_meter_regex = re.compile(r"[0-9 ](밀리미터|미리미터|밀리|미리)")
+centi_meter_regex = re.compile(r"[0-9 ](센치미터|센티미터|센치|센티)")
+meter_regex = re.compile(r"[0-9 ](미터|미타|메타|메다)")
+kilo_meter_regex = re.compile(r"[0-9 ](킬로미터|킬로메타|키로메타|키로미타)")
 # NOTE: 킬로, 밀리 그람에 대해서는 추가할 지 말지 고민임. 해당 단어와 겹치거나 포함된 단어가 존재할 수 있기 때문에 생각해 봐야 할 듯
 
 # noise & special
@@ -34,14 +35,9 @@ bracket_detector = re.compile(r"(\(|\))")
 vocab_allow_regex = re.compile(r"[가-힣A-Z0-9\.\% ]")
 
 filtered_language_regex = re.compile(r"[一-龥々〆〤ァ-ヴーぁ-ゔ]")
-
-# NOTE: 주요 영역별 회의 음성인식 데이터는 도메인 단어 혹은 전문단어를 ()/(idiom)과 같이 한다. 여기서 전문 단어를 추출하기 위해서 다음과 같은 정규식을 사용한다.
 unidentification_filter_regex = re.compile(
     r"@이름[0-9]+|@상호명[0-9]+|@전화번호[0-9]+|@카드번호[0-9]+|@주민번호[0-9]+|@주소[0-9]+|@정당[0-9]+"
 )
-# re.compile(
-#     r"/\(noise\)|/\(bgm\)|@웃음|@목청|@박수|@노래|\{[^{ ]*\}|\(\([^()]*\)\)"
-# )
 
 space_norm: str = lambda x: double_space_regex.sub(" ", x).strip()
 special_char_norm: str = lambda x: special_char_regex.sub("", x)
@@ -140,10 +136,31 @@ def term_extractor(script: str) -> str:
 
 # TODO: 단위를 맞춰주는게 필요한지는 테스트 필요
 def unit_system_normalize(script: str) -> str:
-    script = percentage_regex.sub("%", script)
-    script = kilo_meter_regex.sub("KM", script)
-    script = centi_meter_regex.sub("CM", script)
-    script = meter_regex.sub("M", script)
+    percentage_unit = percentage_regex.search(script)
+    if percentage_unit:
+        start, end = percentage_unit.span(1)  # 0: (전체 범위), 1: (부분 범위)
+        script = script[:start] + "%" + script[end:]
+
+    milli_unit = milli_meter_regex.search(script)
+    if milli_unit:
+        start, end = milli_unit.span(1)
+        script = script[:start] + "MM" + script[end:]
+
+    centi_unit = centi_meter_regex.search(script)
+    if centi_unit:
+        start, end = centi_unit.span(1)
+        script = script[:start] + "CM" + script[end:]
+
+    meter_unit = meter_regex.search(script)
+    if meter_unit:
+        start, end = meter_unit.span(1)
+        script = script[:start] + "M" + script[end:]
+
+    kilo_unit = kilo_meter_regex.search(script)
+    if kilo_unit:
+        start, end = kilo_unit.span(1)
+        script = script[:start] + "KM" + script[end:]
+
     return script
 
 
@@ -168,7 +185,9 @@ def default_sentence_norm(sentence: str) -> str:
     sentence = normalize("NFC", sentence)
     if "idiom" in sentence:
         # NOTE: idiom 어노테이션 개같이 되어 있어서 그냥 전부 필터링 함.
-        # 할꺼면 일관되게 하던지 (.)/(idiom)하고 (idiom)/(.)이게 뭐냐 도대체 짜피 전채 문장에서 54583 정도 밖에 안되서 필터링 하기로 함.
+        # 할꺼면 일관되게 하던지 (.)/(idiom)하고 (idiom)/(.)이게 뭐냐, 짜피 전채 문장에서 54583 정도 밖에 안되서 필터링 하기로 함.
+        # default_sentence_norm는 필터링 할 거 다 하고 난 뒤에 괄호가 남아 있으면 전사가 잘못된 것으로 판단해서 전부 필터링 함.
+        # 이 코드에선 사용하기가 어려움.
         return ""
 
     sentence = noise_mark_delete(sentence)
