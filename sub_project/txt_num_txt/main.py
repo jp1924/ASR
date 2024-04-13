@@ -3,9 +3,6 @@ import os
 from pathlib import Path
 
 from datasets import Dataset, load_dataset
-from evaluate import load
-from peft import PeftConfig
-from peft.utils import get_peft_model_state_dict
 from setproctitle import setproctitle
 from transformers import (
     AutoConfig,
@@ -13,27 +10,42 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     HfArgumentParser,
-    LlamaConfig,
-    LlamaForCausalLM,
     Seq2SeqTrainer,
-    deepspeed,
     is_torch_xla_available,
     is_wandb_available,
 )
 from transformers import logging as hf_logging
 from transformers import set_seed
-from trl import SFTTrainer
+from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 from utils import TNTTrainingArguments
 
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
 
 GLOBAL_LOGGER = None
+PROMPT = """spelling: {spelling}
+phonetic: {phonetic}
+sentence: {sentence}
+"""
 
 
 def main(train_args: TNTTrainingArguments) -> None:
-    def preprocess():
-        return
+    def formatting_func(example) -> str:
+        sentence_ls = example["sentence"]
+        sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
+
+        spelling_ls = example["spelling"]
+        spelling_ls = spelling_ls if isinstance(spelling_ls, list) else [spelling_ls]
+
+        phonetic_ls = example["phonetic"]
+        phonetic_ls = phonetic_ls if isinstance(phonetic_ls, list) else [phonetic_ls]
+
+        formated_ls = list()
+        for sentence, spelling, phonetic in zip(sentence_ls, spelling_ls, phonetic_ls):
+            formated_input = PROMPT.format(sentence=sentence, spelling=spelling, phonetic=phonetic)
+            formated_ls.append(formated_input)
+
+        return formated_ls
 
     def set_wandb() -> None:
         # TODO: 이건 나중에 args로 바꿀 것
@@ -93,22 +105,26 @@ def main(train_args: TNTTrainingArguments) -> None:
     model = AutoModelForCausalLM.from_pretrained(train_args.model_name_or_path, config=config, **model_init_kwargs)
     tokenizer = AutoTokenizer.from_pretrained(train_args.model_name_or_path)
 
+    dataset = load_dataset(train_args.dataset_names)
+
     if GLOBAL_LOGGER and (train_args.local_rank == 0):
         set_wandb()
 
     peft_config = None
     if train_args.do_peft:
+        from peft import PeftConfig
+
         peft_config = PeftConfig.from_pretrained(train_args.peft_config_name_or_path)
 
-    train_data = None
-    valid_data = None
-
+    collator = DataCollatorForCompletionOnlyLM("sentence: ")
     trainer = SFTTrainer(
         model=model,
+        data_collator=collator,
         tokenizer=tokenizer,
         peft_config=peft_config,
-        train_dataset=train_data,
-        eval_dataset=valid_data,
+        train_dataset=dataset["train"],
+        eval_dataset=dataset["test"],
+        formatting_func=formatting_func,
         args=train_args,
     )
 
@@ -116,9 +132,9 @@ def main(train_args: TNTTrainingArguments) -> None:
     if train_args.do_train:
         train(trainer, train_args)
     if train_args.do_eval:
-        eval(trainer, valid_data)
+        eval(trainer)
     if train_args.do_predict:
-        predict(trainer, valid_data)
+        predict(trainer, dataset["test"])
 
 
 def train(trainer: SFTTrainer) -> None:
@@ -168,21 +184,21 @@ def train(trainer: SFTTrainer) -> None:
     # NOTE: peft + zero3가 적용된 상태에서 어떻게 저장되는지 확인
     trainer.save_model(train_args.output_dir)
 
-    if deepspeed.is_deepspeed_zero3_enabled():
-        # use deepspeed engine internal function to gather state dict
-        # state_dict_zero3 contains whole parameters of base and lora adapters
-        # we will not extract lora parameters since peft save_pretrained will do that
-        # https://github.com/huggingface/peft/blob/3714aa2fff158fdfa637b2b65952580801d890b2/src/peft/peft_model.py#L125
-        # https://github.com/huggingface/peft/blob/3714aa2fff158fdfa637b2b65952580801d890b2/src/peft/utils/save_and_load.py#L19
-        state_dict_zero3 = trainer.model_wrapped._zero3_consolidated_16bit_state_dict()
-        if train_args.local_rank == 0:
-            state_dict = state_dict_zero3
-    else:
-        # in other mode we use original code from fastchat team, to make sure our change is minimum
-        state_dict = get_peft_state_maybe_zero_3(trainer.model.named_parameters(), lora_args.bias)
-    if train_args.local_rank == 0:
-        trainer.model.save_pretrained(train_args.output_dir, state_dict=state_dict)
-        trainer.tokenizer.save_pretrained(train_args.output_dir)
+    # if deepspeed.is_deepspeed_zero3_enabled():
+    #     # use deepspeed engine internal function to gather state dict
+    #     # state_dict_zero3 contains whole parameters of base and lora adapters
+    #     # we will not extract lora parameters since peft save_pretrained will do that
+    #     # https://github.com/huggingface/peft/blob/3714aa2fff158fdfa637b2b65952580801d890b2/src/peft/peft_model.py#L125
+    #     # https://github.com/huggingface/peft/blob/3714aa2fff158fdfa637b2b65952580801d890b2/src/peft/utils/save_and_load.py#L19
+    #     state_dict_zero3 = trainer.model_wrapped._zero3_consolidated_16bit_state_dict()
+    #     if train_args.local_rank == 0:
+    #         state_dict = state_dict_zero3
+    # else:
+    #     # in other mode we use original code from fastchat team, to make sure our change is minimum
+    #     state_dict = get_peft_state_maybe_zero_3(trainer.model.named_parameters())
+    # if train_args.local_rank == 0:
+    #     trainer.model.save_pretrained(train_args.output_dir, state_dict=state_dict)
+    #     trainer.tokenizer.save_pretrained(train_args.output_dir)
 
 
 def eval(trainer: SFTTrainer) -> None:

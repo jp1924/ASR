@@ -7,7 +7,8 @@ from transformers import TrainingArguments
 @dataclass
 class TNTTrainingArguments(TrainingArguments):
     # data
-    dataset_names: List[str] = field(
+    # List[str]
+    dataset_names: str = field(
         default=None,
         metadata={"help": "The name of the dataset to use (via the datasets library)."},
     )
