@@ -1,6 +1,4 @@
-import json
-
-from datasets import concatenate_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset
 from utils import preprocess_sentence
 
 
@@ -10,6 +8,8 @@ def main() -> None:
         "jp1924/KsponSpeech",
         "jp1924/KconfSpeech",
         "jp1924/KrespSpeech",
+        "jp1924/MeetingSpeech",
+        "jp1924/BroadcastSpeech",
     ]
 
     dataset_ls = list()
@@ -24,9 +24,13 @@ def main() -> None:
 
     sentence = preprocess_sentence(sentence)
 
-    save_path = "/root/tnt_data.json"
-    with open(save_path, "w", encoding="utf-8") as f:
-        json.dump(sentence, f, indent=4, ensure_ascii=False)
+    dataset = Dataset.from_list(sentence)
+
+    # TODO: 나중에 arg로 할 수 있게 만들 것
+    dataset = dataset.shuffle(seed=42)
+    dataset = dataset.train_test_split(0.1, shuffle=False)
+
+    dataset.push_to_hub("jp1924/TNT_inst")
 
 
 if "__main__" in __name__:
