@@ -197,21 +197,24 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             data_dict[data_key].append(specific_dataset)
 
     train_dataset = None
-    if train_args.do_train:
+    check_containe_dataset = any([x in data_dict for x in train_args.train_dataset_prefix])
+    if train_args.do_train and check_containe_dataset:
         train_dataset = collect_dataset(train_args.train_dataset_prefix)
         train_dataset.set_format("torch")
         logger.info("train_dataset")
         logger.info(train_dataset)
 
     valid_dataset = None
-    if train_args.do_eval:
+    check_containe_dataset = any([x in data_dict for x in train_args.valid_dataset_prefix])
+    if train_args.do_eval and check_containe_dataset:
         valid_dataset = collect_dataset(train_args.valid_dataset_prefix)
         valid_dataset.set_format("torch")
         logger.info("valid_dataset")
         logger.info(valid_dataset)
 
     test_dataset = None
-    if train_args.do_predict:
+    check_containe_dataset = any([x in data_dict for x in train_args.test_dataset_prefix])
+    if train_args.do_predict and check_containe_dataset:
         test_dataset = collect_dataset(train_args.test_dataset_prefix)
         test_dataset.set_format("torch")
         logger.info("test_dataset")
