@@ -1,7 +1,9 @@
 import json
 import os
+import random
 from pathlib import Path
 
+import torch
 from datasets import Dataset, load_dataset
 from setproctitle import setproctitle
 from transformers import (
@@ -23,10 +25,11 @@ hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
 
 GLOBAL_LOGGER = None
-PROMPT = """spelling: {spelling}
-phonetic: {phonetic}
-sentence: {sentence}
-"""
+PROMPT = """주어진 phonetic과 spelling 문장에 있는 철자, 발음 전사로 되어 있는 부분들을 `(phonetic)/(spelling)`와 같은 형식으로 구분되어 있는 이중전사 문으로 바꿔줘. spelling에는 특수 문자도 포함될 수 있다
+### phonetic: {phonetic}
+### spelling: {spelling}
+
+### sentence: {sentence}"""
 
 
 def main(train_args: TNTTrainingArguments) -> None:
@@ -42,6 +45,7 @@ def main(train_args: TNTTrainingArguments) -> None:
 
         formated_ls = list()
         for sentence, spelling, phonetic in zip(sentence_ls, spelling_ls, phonetic_ls):
+            spelling = spelling if random.choices([0, 1])[0] else ""
             formated_input = PROMPT.format(sentence=sentence, spelling=spelling, phonetic=phonetic)
             formated_ls.append(formated_input)
 
@@ -90,13 +94,12 @@ def main(train_args: TNTTrainingArguments) -> None:
 
             model_init_kwargs["quantization_config"] = quantization_config
 
-        model_init_kwargs["use_cache"] = False
         model_init_kwargs["device_map"] = train_args.device_map
         model_init_kwargs["torch_dtype"] = train_args.torch_dtype
         model_init_kwargs["use_auth_token"] = train_args.use_auth_token
         model_init_kwargs["low_cpu_mem_usage"] = train_args.low_cpu_mem_usage
         model_init_kwargs["trust_remote_code"] = train_args.trust_remote_code
-        model_init_kwargs["use_flash_attention_2"] = train_args.use_flash_attention_2
+        model_init_kwargs["attn_implementation"] = train_args.attn_implementation
 
         return model_init_kwargs
 
@@ -104,6 +107,7 @@ def main(train_args: TNTTrainingArguments) -> None:
     config = AutoConfig.from_pretrained(train_args.model_name_or_path, use_cache=False)
     model = AutoModelForCausalLM.from_pretrained(train_args.model_name_or_path, config=config, **model_init_kwargs)
     tokenizer = AutoTokenizer.from_pretrained(train_args.model_name_or_path)
+    tokenizer.padding_side = "left"
 
     dataset = load_dataset(train_args.dataset_names)
 
@@ -116,7 +120,12 @@ def main(train_args: TNTTrainingArguments) -> None:
 
         peft_config = PeftConfig.from_pretrained(train_args.peft_config_name_or_path)
 
-    collator = DataCollatorForCompletionOnlyLM("sentence: ")
+    if train_args.torch_compile:
+        model = torch.compile(model)
+
+    collator = DataCollatorForCompletionOnlyLM(
+        tokenizer=tokenizer, response_template=tokenizer.encode("\n### sentence: ")[5:-1]
+    )
     trainer = SFTTrainer(
         model=model,
         data_collator=collator,
@@ -130,7 +139,7 @@ def main(train_args: TNTTrainingArguments) -> None:
 
     # [NOTE]: run train, eval, predict
     if train_args.do_train:
-        train(trainer, train_args)
+        train(trainer)
     if train_args.do_eval:
         eval(trainer)
     if train_args.do_predict:
