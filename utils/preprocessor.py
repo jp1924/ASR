@@ -25,7 +25,7 @@ centi_meter_regex = re.compile(r"[0-9 ](센치미터|센티미터|센치|센티)
 meter_regex = re.compile(r"[0-9 ](미터|미타|메타|메다)")
 kilo_meter_regex = re.compile(r"[0-9 ](킬로미터|킬로메타|키로메타|키로미타)")
 
-milli_liter_regex = re.compile(r"[0-9 ](밀리리터|미리리터)")
+milli_liter_regex = re.compile(r"[0-9 ](밀리리터|미리리터|밀리리타|미리리타)")
 liter_regex = re.compile(r"[0-9 ](리터|리타)")
 kilo_liter_regex = re.compile(r"[0-9 ](킬로리터|키로리터|킬로리타|키로리타)")
 
