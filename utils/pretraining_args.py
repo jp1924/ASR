@@ -80,3 +80,4 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
             "help": "Length of each vector mask span to mask along the time axis in the contrastive task. If omitted, will pull value from model config."
         },
     )
+    attn_implementation: str = field(default=None)

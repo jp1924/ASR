@@ -51,7 +51,6 @@ GLOBAL_LOGGER = None
 
 
 def main(train_args: Wav2Vec2PretrainingArguments):
-
     def preprocessor(example: Dict[str, Union[List[Any], List[List[Any]]]]) -> Dict[str, List[Any]]:
         sentence_ls = example["sentence"]
         sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
@@ -133,7 +132,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     # load model, feature_extractor, tokenizer
     config = Wav2Vec2Config.from_pretrained(
         train_args.model_name_or_path,
-        attn_implementation="flash_attention_2",
+        attn_implementation=train_args.attn_implementation,
     )
     model = Wav2Vec2ForPreTraining(config)
 
@@ -259,7 +258,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
 
 
 def train(trainer: Wav2Vec2Pretrainer) -> None:
-    train_args = trainer.args
+    train_args: Wav2Vec2PretrainingArguments = trainer.args
     trainer.train(resume_from_checkpoint=train_args.resume_from_checkpoint)
 
     save_dir = os.path.join(train_args.output_dir, "last_model")
