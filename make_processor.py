@@ -30,20 +30,22 @@ def main() -> None:
     vocab_file_path = "./vocab.json"
     save_dir_path = "/root/model"
 
-    korea = load_dataset("jp1924/KoreaSpeech", split="train")
-    kspon = load_dataset("jp1924/KsponSpeech", split="train")
-    kconf = load_dataset("jp1924/KconfSpeech", split="train")
-    kresp = load_dataset("jp1924/KrespSpeech", split="train")
+    dataset_name_ls = [
+        "jp1924/KsponSpeech",
+        "jp1924/KsponSpeech",
+        "jp1924/KconfSpeech",
+        "jp1924/KrespSpeech",
+    ]
+    dataset_ls = list()
+    for dataset_name in dataset_name_ls:
+        dataset = load_dataset(dataset_name, split="train")
+        dataset = dataset.select_columns(["sentence"])
+        dataset_ls.append(dataset)
 
-    kspon = kspon.select_columns(["sentence"])
-    kconf = kconf.select_columns(["sentence"])
-    kresp = kresp.select_columns(["sentence"])
-    korea = korea.select_columns(["sentence"])
-
-    datasets = concatenate_datasets([kspon, kconf, kresp, korea])
+    datasets = concatenate_datasets(dataset_ls)
     datasets = datasets.map(preprocessor, batched=True, num_proc=4)
-    sentence = datasets["sentence"]
 
+    sentence = datasets["sentence"]
     vocab = sorted(set("".join(sentence)))
 
     vocab[0] = "|"
