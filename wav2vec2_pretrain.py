@@ -16,7 +16,7 @@
 """ Pre-Training a 🤗 Wav2Vec2 model on unlabeled audio data """
 
 import os
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 from data import DataCollatorForWav2Vec2Pretraining
@@ -47,6 +47,7 @@ from wav2vec2_pretrainer import Wav2Vec2Pretrainer
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
 
+global GLOBAL_LOGGER
 GLOBAL_LOGGER = None
 
 
@@ -100,9 +101,9 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         data_ls = list()
         for prefix in prefix_ls:
             check_key: str = lambda key: (prefix in key)
-            filter_data = [data_dict.pop(key) for key in list(data_dict.keys()) if check_key(key)]
+            filter_data = [concatenate_datasets(data_dict.pop(key)) for key in list(data_dict.keys()) if check_key(key)]
             data_ls.extend(filter_data)
-        return concatenate_datasets(data_ls[0])
+        return concatenate_datasets(data_ls)
 
     def set_wandb() -> None:
         # TODO: 이건 나중에 args로 바꿀 것
@@ -224,6 +225,18 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     # 7136987
     # 238324
 
+    valid_dataset_dict = dict()
+    valid_name_ls = valid_dataset["dataset_name"]
+    for dataset_name in set(valid_name_ls):
+        part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
+        part_dataset = valid_dataset.select(part_idx, keep_in_memory=False)
+
+        # 'jp1924/KconfSpeech-validation'
+        start = dataset_name.rindex("/") + 1
+        end = dataset_name.rindex("-")
+
+        valid_dataset_dict[dataset_name[start:end]] = part_dataset
+
     # set collator
     collator = DataCollatorForWav2Vec2Pretraining(
         model=model,
@@ -246,7 +259,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         model=model,
         data_collator=collator,
         train_dataset=train_dataset,
-        eval_dataset=valid_dataset,
+        eval_dataset=valid_dataset_dict,
         tokenizer=processor,
         args=train_args,
     )
@@ -262,22 +275,35 @@ def main(train_args: Wav2Vec2PretrainingArguments):
 
 def train(trainer: Wav2Vec2Pretrainer) -> None:
     train_args: Wav2Vec2PretrainingArguments = trainer.args
-    trainer.train(resume_from_checkpoint=train_args.resume_from_checkpoint)
+    outputs = trainer.train(resume_from_checkpoint=train_args.resume_from_checkpoint)
 
     save_dir = os.path.join(train_args.output_dir, "last_model")
     trainer.save_model(save_dir)
-    trainer.save_metrics()
-    trainer.save_state()
+    # trainer 특성 때문에 save_metrics 안됨.
 
 
 @torch.no_grad()
-def valid(trainer: Wav2Vec2Pretrainer) -> None:
-    pass
+def valid(trainer: Wav2Vec2Pretrainer, valid_datasets: Optional[Union[Dataset, Dict[str, Dataset]]] = None) -> None:
+    valid_datasets = valid_datasets if valid_datasets else trainer.eval_dataset
+    metrics = trainer.evaluate(valid_datasets)
 
 
 @torch.no_grad()
-def predict(trainer: Wav2Vec2Pretrainer, test_dataset: Dataset) -> None:
-    pass
+def predict(trainer: Wav2Vec2Pretrainer, test_dataset: Optional[Union[Dataset, Dict[str, Dataset]]] = None) -> None:
+    test_dataset_dict = dict()
+    test_name_ls = test_dataset["dataset_name"]
+    for dataset_name in set(test_name_ls):
+        part_idx = [idx for idx, x in enumerate(test_name_ls) if x == dataset_name]
+        part_dataset = test_dataset.select(part_idx, keep_in_memory=False)
+
+        # 'jp1924/KconfSpeech-validation'
+        start = dataset_name.rindex("/") + 1
+        end = dataset_name.rindex("-")
+
+        outputs = trainer.predict(part_dataset, metric_key_prefix=f"test/{dataset_name[start:]}")
+        if GLOBAL_LOGGER:
+            GLOBAL_LOGGER.log(outputs.metrics)
+        test_dataset_dict[dataset_name[start:end]] = part_dataset
 
 
 if __name__ == "__main__":
@@ -304,3 +330,7 @@ if __name__ == "__main__":
         GLOBAL_LOGGER = wandb
 
     main(train_args)
+
+    if GLOBAL_LOGGER:
+        GLOBAL_LOGGER.finish()
+        GLOBAL_LOGGER.finish()
