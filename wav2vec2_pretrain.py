@@ -202,24 +202,36 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     if train_args.do_train and check_containe_dataset:
         train_dataset = collect_dataset(train_args.train_dataset_prefix)
         train_dataset.set_format("torch")
-        logger.info("train_dataset")
-        logger.info(train_dataset)
+        if train_args.local_rank == 0:
+            logger.info("train_dataset")
+            logger.info(train_dataset)
+
+            train_total_length = sum(train_dataset["length"])
+            logger.info(f"train_total_hour: {(train_total_length / 16000) / 60**2:.2f}h")
 
     valid_dataset = None
     check_containe_dataset = any([x in data_dict for x in train_args.valid_dataset_prefix])
     if train_args.do_eval and check_containe_dataset:
         valid_dataset = collect_dataset(train_args.valid_dataset_prefix)
         valid_dataset.set_format("torch")
-        logger.info("valid_dataset")
-        logger.info(valid_dataset)
+        if train_args.local_rank == 0:
+            logger.info("valid_dataset")
+            logger.info(valid_dataset)
+
+            valid_total_length = sum(valid_dataset["length"])
+            logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
 
     test_dataset = None
     check_containe_dataset = any([x in data_dict for x in train_args.test_dataset_prefix])
     if train_args.do_predict and check_containe_dataset:
         test_dataset = collect_dataset(train_args.test_dataset_prefix)
         test_dataset.set_format("torch")
-        logger.info("test_dataset")
-        logger.info(test_dataset)
+        if train_args.local_rank == 0:
+            logger.info("test_dataset")
+            logger.info(test_dataset)
+
+            test_total_length = sum(test_dataset["length"])
+            logger.info(f"test_total_hour: {(test_total_length / 16000) / 60**2:.2f}h")
 
     # 6898663 >> 3.3% 정도 필터링 됨. 여기엔 tokenizing할 수 없는 문자, 음성 길이가 맞지 않는 문자 등 여러 요인으로 인해 필터링 된 데이터가 포함
     # 7136987
