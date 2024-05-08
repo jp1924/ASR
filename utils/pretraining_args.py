@@ -54,7 +54,7 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
     # model
     model_name_or_path: str = field(
         default=None,
-        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models.", "required": True},
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models."},
     )
 
     pad_to_multiple_of: int = field(

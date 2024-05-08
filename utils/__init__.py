@@ -1,3 +1,5 @@
+from transformers.utils import SAFE_WEIGHTS_NAME
+
 from .preprocessor import (
     centi_meter_regex,
     default_sentence_norm,

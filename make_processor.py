@@ -1,12 +1,13 @@
 import json
 
 from datasets import concatenate_datasets, load_dataset
+from utils import default_sentence_norm
+
 from transformers import (
     Wav2Vec2CTCTokenizer,
     Wav2Vec2FeatureExtractor,
     Wav2Vec2Processor,
 )
-from utils import default_sentence_norm
 
 
 def preprocessor(example):
@@ -26,7 +27,6 @@ def preprocessor(example):
 
 
 def main() -> None:
-
     vocab_file_path = "./vocab.json"
     save_dir_path = "/root/model"
 

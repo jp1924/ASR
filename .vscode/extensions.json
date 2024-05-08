@@ -14,5 +14,6 @@
         "jinsihou.diff-tool",
         "MS-CEINTL.vscode-language-pack-ko",
         "rogalmic.bash-debug",
+        "charliermarsh.ruff",
     ],
 }

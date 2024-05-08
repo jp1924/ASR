@@ -5,7 +5,9 @@ from unicodedata import normalize
 
 import librosa
 import numpy as np
+
 from transformers import PretrainedConfig
+
 
 # 해당 모델은 한국어를 소리 그대로 전사하는 것에 목표가 있음
 # 전사된 문장에 중국어, 일본어가 들어가 있으면 정상적이지 않은 데이터라 간주하고 필터링 함.

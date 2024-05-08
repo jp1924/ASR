@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Fine-tuning a 🤗 Transformers CTC model for automatic speech recognition"""
+"""Fine-tuning a 🤗 Transformers CTC model for automatic speech recognition"""
 
 import functools
 import json
@@ -30,8 +30,9 @@ import datasets
 import evaluate
 import numpy as np
 import torch
-import transformers
 from datasets import DatasetDict, load_dataset
+
+import transformers
 from transformers import (
     AutoConfig,
     AutoFeatureExtractor,
@@ -47,14 +48,6 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint, is_main_process
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-
-# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-
-logger = logging.getLogger(__name__)
-
-
-def list_field(default=None, metadata=None):
-    return field(default_factory=lambda: default, metadata=metadata)
 
 
 @dataclass
@@ -498,7 +491,9 @@ def main():
     # that make training complicated and do not help in transcribing the speech
     # E.g. characters, such as `,` and `.` do not really have an acoustic characteristic
     # that could be easily picked up by the model
-    chars_to_ignore_regex = f'[{"".join(data_args.chars_to_ignore)}]' if data_args.chars_to_ignore is not None else None
+    chars_to_ignore_regex = (
+        f'[{"".join(data_args.chars_to_ignore)}]' if data_args.chars_to_ignore is not None else None
+    )
     text_column_name = data_args.text_column_name
 
     def remove_special_characters(batch):
@@ -820,4 +815,5 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
     main()

@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 
-""" Pre-Training a 🤗 Wav2Vec2 model on unlabeled audio data """
+"""Pre-Training a 🤗 Wav2Vec2 model on unlabeled audio data"""
 
 import os
 from typing import Any, Dict, List, Optional, Union
@@ -21,28 +21,31 @@ from typing import Any, Dict, List, Optional, Union
 import torch
 from data import DataCollatorForWav2Vec2Pretraining
 from datasets import Dataset, concatenate_datasets, load_dataset
-from models import Wav2Vec2ForPreTraining
-from setproctitle import setproctitle
 
-# Wav2Vec2ForPreTraining,
-from transformers import (
-    HfArgumentParser,
-    Wav2Vec2Config,
-    Wav2Vec2CTCTokenizer,
-    Wav2Vec2FeatureExtractor,
-    Wav2Vec2Processor,
-    is_torch_xla_available,
-    is_wandb_available,
-)
-from transformers import logging as hf_logging
-from transformers import set_seed
+# from models import Wav2Vec2ForPreTraining
+from setproctitle import setproctitle
 from utils import (
+    SAFE_WEIGHTS_NAME,
     Wav2Vec2PretrainingArguments,
     default_sentence_norm,
     get_feat_extract_output_lengths,
     librosa_silence_filter,
 )
 from wav2vec2_pretrainer import Wav2Vec2Pretrainer
+
+from transformers import (
+    HfArgumentParser,
+    Wav2Vec2Config,
+    Wav2Vec2CTCTokenizer,
+    Wav2Vec2FeatureExtractor,
+    Wav2Vec2ForPreTraining,
+    Wav2Vec2Processor,
+    is_torch_xla_available,
+    is_wandb_available,
+    set_seed,
+)
+from transformers import logging as hf_logging
+
 
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
@@ -101,7 +104,9 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         data_ls = list()
         for prefix in prefix_ls:
             check_key: str = lambda key: (prefix in key)
-            filter_data = [concatenate_datasets(data_dict.pop(key)) for key in list(data_dict.keys()) if check_key(key)]
+            filter_data = [
+                concatenate_datasets(data_dict.pop(key)) for key in list(data_dict.keys()) if check_key(key)
+            ]
             data_ls.extend(filter_data)
         return concatenate_datasets(data_ls)
 
@@ -130,15 +135,20 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             GLOBAL_LOGGER.watch(model, log=_watch_model, log_freq=max(100, train_args.logging_steps))
         GLOBAL_LOGGER.run._label(code="transformers_trainer")
 
-    # load model, feature_extractor, tokenizer
+    model_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
     config = Wav2Vec2Config.from_pretrained(
-        train_args.model_name_or_path,
+        model_path,
         attn_implementation=train_args.attn_implementation,
     )
-    model = Wav2Vec2ForPreTraining(config)
 
-    tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(train_args.model_name_or_path)
-    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(train_args.model_name_or_path)
+    # load model, feature_extractor, tokenizer
+    if os.path.exists(os.path.join(model_path, SAFE_WEIGHTS_NAME)):
+        model = Wav2Vec2ForPreTraining.from_pretrained(model_path)
+    else:
+        model = Wav2Vec2ForPreTraining(config)
+
+    tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(model_path)
+    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_path)
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
 
     # for vscode intellisence
@@ -165,7 +175,6 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         # DatasetDict이라서 이런식으로 해줘야 함.
         column_names = set(sum(dataset.column_names.values(), []))
         with train_args.main_process_first(desc="data preprocess"):
-
             cache_file_name = None
             if train_args.cache_file_name:
                 get_cache_path: str = lambda x: os.path.join(
@@ -238,6 +247,8 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     # 238324
 
     valid_dataset_dict = dict()
+    # valid_exclude_ls = ["BroadcastSpeech"]
+    valid_exclude_ls = []
     valid_name_ls = valid_dataset["dataset_name"]
     for dataset_name in set(valid_name_ls):
         part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
@@ -246,6 +257,9 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         # 'jp1924/KconfSpeech-validation'
         start = dataset_name.rindex("/") + 1
         end = dataset_name.rindex("-")
+
+        if dataset_name[start:end] in valid_exclude_ls:
+            continue
 
         valid_dataset_dict[dataset_name[start:end]] = part_dataset
 
@@ -287,7 +301,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
 
 def train(trainer: Wav2Vec2Pretrainer) -> None:
     train_args: Wav2Vec2PretrainingArguments = trainer.args
-    outputs = trainer.train(resume_from_checkpoint=train_args.resume_from_checkpoint)
+    trainer.train(resume_from_checkpoint=train_args.resume_from_checkpoint)
 
     save_dir = os.path.join(train_args.output_dir, "last_model")
     trainer.save_model(save_dir)
@@ -297,7 +311,7 @@ def train(trainer: Wav2Vec2Pretrainer) -> None:
 @torch.no_grad()
 def valid(trainer: Wav2Vec2Pretrainer, valid_datasets: Optional[Union[Dataset, Dict[str, Dataset]]] = None) -> None:
     valid_datasets = valid_datasets if valid_datasets else trainer.eval_dataset
-    metrics = trainer.evaluate(valid_datasets)
+    trainer.evaluate(valid_datasets)
 
 
 @torch.no_grad()
@@ -345,5 +359,4 @@ if __name__ == "__main__":
     main(train_args)
 
     if GLOBAL_LOGGER:
-        GLOBAL_LOGGER.finish()
         GLOBAL_LOGGER.finish()
