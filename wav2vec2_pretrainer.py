@@ -538,17 +538,22 @@ class Wav2Vec2Pretrainer(Trainer):
         metrics = denumpify_detensorize(metrics)
 
         if all_losses is not None:
+            all_losses = all_losses.astype(np.float32)
             metrics[f"{metric_key_prefix}_loss"] = round(all_losses.sum().item() / all_num_losses.sum().item(), 4)
 
         if all_codevector_perplexities is not None:
+            all_codevector_perplexities = all_codevector_perplexities.astype(np.float32)
             metrics[f"{metric_key_prefix}_ppl"] = round(all_codevector_perplexities.mean().item(), 4)
 
         if all_contrastive_losses is not None:
+            all_contrastive_losses = all_contrastive_losses.astype(np.float32)
             metrics[f"{metric_key_prefix}_contrastive_loss"] = round(
                 all_contrastive_losses.sum().item() / all_num_losses.sum().item(), 4
             )
 
+        # inf가 발생하는 원인은 overflow 때문임.
         if all_diversity_losses is not None:
+            all_diversity_losses = all_diversity_losses.astype(np.float32)
             metrics[f"{metric_key_prefix}_diversity_loss"] = round(
                 all_diversity_losses.sum().item() / all_num_losses.sum().item(), 4
             )
