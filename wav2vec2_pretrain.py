@@ -21,8 +21,6 @@ from typing import Any, Dict, List, Optional, Union
 import torch
 from data import DataCollatorForWav2Vec2Pretraining
 from datasets import Dataset, concatenate_datasets, load_dataset
-
-# from models import Wav2Vec2ForPreTraining
 from setproctitle import setproctitle
 from utils import (
     SAFE_WEIGHTS_NAME,
@@ -35,10 +33,10 @@ from wav2vec2_pretrainer import Wav2Vec2Pretrainer
 
 from transformers import (
     HfArgumentParser,
-    Wav2Vec2Config,
+    Wav2Vec2ConformerConfig,
+    Wav2Vec2ConformerForPreTraining,
     Wav2Vec2CTCTokenizer,
     Wav2Vec2FeatureExtractor,
-    Wav2Vec2ForPreTraining,
     Wav2Vec2Processor,
     is_torch_xla_available,
     is_wandb_available,
@@ -100,7 +98,10 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             "length": length_ls,
         }
 
-    def collect_dataset(prefix_ls: List[str]) -> Dataset:
+    def collect_dataset(prefix_ls: List[str]) -> Optional[Dataset]:
+        if not prefix_ls:
+            return None
+
         data_ls = list()
         for prefix in prefix_ls:
             check_key: str = lambda key: (prefix in key)
@@ -108,7 +109,10 @@ def main(train_args: Wav2Vec2PretrainingArguments):
                 concatenate_datasets(data_dict.pop(key)) for key in list(data_dict.keys()) if check_key(key)
             ]
             data_ls.extend(filter_data)
-        return concatenate_datasets(data_ls)
+        dataset = concatenate_datasets(data_ls)
+        dataset.set_format("torch")
+
+        return dataset
 
     def set_wandb() -> None:
         # TODO: 이건 나중에 args로 바꿀 것
@@ -136,24 +140,24 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         GLOBAL_LOGGER.run._label(code="transformers_trainer")
 
     model_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
-    config = Wav2Vec2Config.from_pretrained(
+    config = Wav2Vec2ConformerConfig.from_pretrained(
         model_path,
         attn_implementation=train_args.attn_implementation,
     )
 
     # load model, feature_extractor, tokenizer
     if os.path.exists(os.path.join(model_path, SAFE_WEIGHTS_NAME)):
-        model = Wav2Vec2ForPreTraining.from_pretrained(model_path)
+        model = Wav2Vec2ConformerForPreTraining.from_pretrained(model_path)
     else:
-        model = Wav2Vec2ForPreTraining(config)
+        model = Wav2Vec2ConformerForPreTraining(config)
 
     tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(model_path)
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_path)
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
 
     # for vscode intellisence
-    model: Wav2Vec2ForPreTraining
-    config: Wav2Vec2Config
+    model: Wav2Vec2ConformerForPreTraining
+    config: Wav2Vec2ConformerConfig
     feature_extractor: Wav2Vec2FeatureExtractor
     tokenizer: Wav2Vec2CTCTokenizer
     processor: Wav2Vec2Processor
@@ -178,7 +182,8 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             cache_file_name = None
             if train_args.cache_file_name:
                 get_cache_path: str = lambda x: os.path.join(
-                    train_args.cache_dir, f"{name}-{x}_{train_args.cache_file_name}"
+                    train_args.cache_dir,
+                    f"{name}-{x}_{train_args.cache_file_name}",
                 )
                 name = dataset_name.split("/")[-1]
                 cache_file_name = {x: get_cache_path(x) for x in dataset}
@@ -207,39 +212,30 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             data_dict[data_key].append(specific_dataset)
 
     train_dataset = None
-    check_containe_dataset = any([x in data_dict for x in train_args.train_dataset_prefix])
-    if train_args.do_train and check_containe_dataset:
+    if train_args.do_train:
         train_dataset = collect_dataset(train_args.train_dataset_prefix)
-        train_dataset.set_format("torch")
-        if train_args.local_rank == 0:
+        if (train_args.local_rank == 0) and train_dataset:
+            train_total_length = sum(train_dataset["length"])
             logger.info("train_dataset")
             logger.info(train_dataset)
-
-            train_total_length = sum(train_dataset["length"])
             logger.info(f"train_total_hour: {(train_total_length / 16000) / 60**2:.2f}h")
 
     valid_dataset = None
-    check_containe_dataset = any([x in data_dict for x in train_args.valid_dataset_prefix])
-    if train_args.do_eval and check_containe_dataset:
+    if train_args.do_eval:
         valid_dataset = collect_dataset(train_args.valid_dataset_prefix)
-        valid_dataset.set_format("torch")
-        if train_args.local_rank == 0:
+        if (train_args.local_rank == 0) and valid_dataset:
+            valid_total_length = sum(valid_dataset["length"])
             logger.info("valid_dataset")
             logger.info(valid_dataset)
-
-            valid_total_length = sum(valid_dataset["length"])
             logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
 
     test_dataset = None
-    check_containe_dataset = any([x in data_dict for x in train_args.test_dataset_prefix])
-    if train_args.do_predict and check_containe_dataset:
+    if train_args.do_predict:
         test_dataset = collect_dataset(train_args.test_dataset_prefix)
-        test_dataset.set_format("torch")
-        if train_args.local_rank == 0:
+        if (train_args.local_rank == 0) and test_dataset:
+            test_total_length = sum(test_dataset["length"])
             logger.info("test_dataset")
             logger.info(test_dataset)
-
-            test_total_length = sum(test_dataset["length"])
             logger.info(f"test_total_hour: {(test_total_length / 16000) / 60**2:.2f}h")
 
     # 6898663 >> 3.3% 정도 필터링 됨. 여기엔 tokenizing할 수 없는 문자, 음성 길이가 맞지 않는 문자 등 여러 요인으로 인해 필터링 된 데이터가 포함
@@ -247,7 +243,6 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     # 238324
 
     valid_dataset_dict = dict()
-    # valid_exclude_ls = ["BroadcastSpeech"]
     valid_exclude_ls = []
     valid_name_ls = valid_dataset["dataset_name"]
     for dataset_name in set(valid_name_ls):
@@ -278,6 +273,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
             model,
             backend=train_args.torch_compile_backend,
             mode=train_args.torch_compile_mode,
+            fullgraph=True,
         )
 
     # set trainer
