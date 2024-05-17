@@ -1,1 +1,1 @@
-from .pretrain_collator import DataCollatorForWav2Vec2Pretraining
+from .collator import DataCollatorCTCWithPadding, DataCollatorForWav2Vec2Pretraining

@@ -2,7 +2,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
 import torch
-from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForPreTraining
+
+from transformers import AutoProcessor, Wav2Vec2FeatureExtractor, Wav2Vec2ForPreTraining
 from transformers.data.data_collator import DataCollatorMixin
 from transformers.models.wav2vec2.modeling_wav2vec2 import (
     _compute_mask_indices,
@@ -106,5 +107,43 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
         )
         batch["mask_time_indices"] = torch.tensor(mask_time_indices, dtype=torch.long, device=device)
         batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices, dtype=torch.long, device=device)
+
+        return batch
+
+
+@dataclass
+class DataCollatorCTCWithPadding(DataCollatorMixin):
+    processor: AutoProcessor
+    padding: Union[bool, str] = "longest"
+    pad_to_multiple_of: Optional[int] = None
+    pad_to_multiple_of_labels: Optional[int] = None
+    feature_extractor_input_name: Optional[str] = "input_values"
+
+    def torch_call(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
+        input_features = [
+            {self.feature_extractor_input_name: feature[self.feature_extractor_input_name]} for feature in features
+        ]
+        label_features = [{"input_ids": feature["labels"]} for feature in features]
+
+        batch = self.processor.pad(
+            input_features,
+            padding=self.padding,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors="pt",
+        )
+
+        labels_batch = self.processor.pad(
+            labels=label_features,
+            padding=self.padding,
+            pad_to_multiple_of=self.pad_to_multiple_of_labels,
+            return_tensors="pt",
+        )
+
+        # replace padding with -100 to ignore loss correctly
+        labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
+
+        batch["labels"] = labels
+        if "attention_mask" in batch:
+            batch["attention_mask"] = batch["attention_mask"].to(torch.long)
 
         return batch
