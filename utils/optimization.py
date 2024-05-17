@@ -10,6 +10,20 @@ from transformers.optimization import TYPE_TO_SCHEDULER_FUNCTION
 from transformers.utils import ExplicitEnum
 
 
+class SchedulerType(ExplicitEnum):
+    LINEAR = "linear"
+    COSINE = "cosine"
+    COSINE_WITH_RESTARTS = "cosine_with_restarts"
+    POLYNOMIAL = "polynomial"
+    CONSTANT = "constant"
+    CONSTANT_WITH_WARMUP = "constant_with_warmup"
+    INVERSE_SQRT = "inverse_sqrt"
+    REDUCE_ON_PLATEAU = "reduce_lr_on_plateau"
+    COSINE_WITH_MIN_LR = "cosine_with_min_lr"
+    WARMUP_STABLE_DECAY = "warmup_stable_decay"
+    TRI_STAGE = "tri_stage"
+
+
 def _get_tri_stage_schedule_with_warmup_lr_lambda(
     current_step: int,
     num_warmup_steps: int,
@@ -39,7 +53,7 @@ def get_tri_stage_schedule_with_warmup_lr_lambda(
     final_learning_rate: float,
     last_epoch: int = -1,
 ) -> LambdaLR:
-    learning_rate = optimizer.lr
+    learning_rate = optimizer.defaults["lr"]
     if isinstance(num_hold_steps, float):
         num_hold_steps = int(num_training_steps * num_hold_steps)
 
@@ -59,25 +73,18 @@ def get_tri_stage_schedule_with_warmup_lr_lambda(
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
-def set_scheduler() -> None:
-    module = importlib.import_module("transformers.trainer_utils")
-    module = importlib.import_module("transformers.optimization")
-
-    class SchedulerType(ExplicitEnum):
-        LINEAR = "linear"
-        COSINE = "cosine"
-        COSINE_WITH_RESTARTS = "cosine_with_restarts"
-        POLYNOMIAL = "polynomial"
-        CONSTANT = "constant"
-        CONSTANT_WITH_WARMUP = "constant_with_warmup"
-        INVERSE_SQRT = "inverse_sqrt"
-        REDUCE_ON_PLATEAU = "reduce_lr_on_plateau"
-        COSINE_WITH_MIN_LR = "cosine_with_min_lr"
-        WARMUP_STABLE_DECAY = "warmup_stable_decay"
-        TRI_STAGE = "tri_stage"
-
+def set_scheduler():
     NEW_TYPE_TO_SCHEDULER_FUNCTION = TYPE_TO_SCHEDULER_FUNCTION
     NEW_TYPE_TO_SCHEDULER_FUNCTION.update({SchedulerType.TRI_STAGE: get_tri_stage_schedule_with_warmup_lr_lambda})
 
+    module = importlib.import_module("transformers.optimization")
     setattr(module, "TYPE_TO_SCHEDULER_FUNCTION", NEW_TYPE_TO_SCHEDULER_FUNCTION)
+
+    module = importlib.import_module("transformers.trainer_utils")
+    setattr(module, "SchedulerType", SchedulerType)
+
+    module = importlib.import_module("transformers.training_args")
+    setattr(module, "SchedulerType", SchedulerType)
+
+    module = importlib.import_module("transformers.optimization")
     setattr(module, "SchedulerType", SchedulerType)

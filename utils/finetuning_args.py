@@ -1,11 +1,20 @@
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Union
 
 from transformers import TrainingArguments
+
+from .optimization import SchedulerType, set_scheduler
+
+
+set_scheduler()
 
 
 @dataclass
 class Wav2Vec2FinetuningArguments(TrainingArguments):
+    lr_scheduler_type: Union[SchedulerType, str] = field(
+        default="linear",
+        metadata={"help": "The scheduler type to use."},
+    )
     # data
     dataset_names: List[str] = field(
         default=None,
