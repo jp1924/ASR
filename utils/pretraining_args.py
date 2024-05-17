@@ -39,9 +39,18 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         default=448512.0,
         metadata={"help": "Filter out audio files that are shorter than `max_duration_in_seconds` seconds"},
     )
-    train_dataset_prefix: List[str] = field(default=None)
-    valid_dataset_prefix: List[str] = field(default=None)
-    test_dataset_prefix: List[str] = field(default=None)
+    train_dataset_prefix: List[str] = field(
+        default="train",
+        metadata={"help": ""},
+    )
+    valid_dataset_prefix: List[str] = field(
+        default="validation",
+        metadata={"help": ""},
+    )
+    test_dataset_prefix: List[str] = field(
+        default="eval_other",
+        metadata={"help": ""},
+    )
     cache_file_name: str = field(
         default=None,
         metadata={"help": "Path to cached file name"},
@@ -63,8 +72,14 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
             "help": "If set will pad the sequence to a multiple of the provided value. This is especially useful to enable the use of Tensor Cores on NVIDIA hardware with compute capability >= 7.5 (Volta)."
         },
     )
-    max_gumbel_temperature: float = field(default=2.0, metadata={"help": "Maximum temperature for gumbel softmax."})
-    min_gumbel_temperature: float = field(default=0.5, metadata={"help": "Minimum temperature for gumbel softmax."})
+    max_gumbel_temperature: float = field(
+        default=2.0,
+        metadata={"help": "Maximum temperature for gumbel softmax."},
+    )
+    min_gumbel_temperature: float = field(
+        default=0.5,
+        metadata={"help": "Minimum temperature for gumbel softmax."},
+    )
     gumbel_temperature_decay: float = field(
         default=0.999995, metadata={"help": "Decay of gumbel temperature during training."}
     )
