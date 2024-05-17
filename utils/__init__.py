@@ -1,5 +1,7 @@
 from transformers.utils import SAFE_WEIGHTS_NAME
 
+from .finetuning_args import Wav2Vec2FinetuningArguments
+from .optimization import get_tri_stage_schedule_with_warmup_lr_lambda, set_scheduler
 from .preprocessor import (
     centi_meter_regex,
     default_sentence_norm,
