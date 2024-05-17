@@ -36,7 +36,7 @@ from transformers import (
     HfArgumentParser,
     Trainer,
     Wav2Vec2ConformerConfig,
-    Wav2Vec2ConformerForPreTraining,
+    Wav2Vec2ConformerForCTC,
     Wav2Vec2CTCTokenizer,
     Wav2Vec2FeatureExtractor,
     Wav2Vec2Processor,
@@ -49,7 +49,6 @@ from transformers.trainer_utils import EvalPrediction
 
 
 set_scheduler()
-
 
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
@@ -170,16 +169,16 @@ def main(train_args: Wav2Vec2FinetuningArguments):
 
     # load model, feature_extractor, tokenizer
     if os.path.exists(os.path.join(model_path, SAFE_WEIGHTS_NAME)):
-        model = Wav2Vec2ConformerForPreTraining.from_pretrained(model_path)
+        model = Wav2Vec2ConformerForCTC.from_pretrained(model_path)
     else:
-        model = Wav2Vec2ConformerForPreTraining(config)
+        model = Wav2Vec2ConformerForCTC(config)
 
     tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(model_path)
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_path)
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
 
     # for vscode intellisence
-    model: Wav2Vec2ConformerForPreTraining
+    model: Wav2Vec2ConformerForCTC
     config: Wav2Vec2ConformerConfig
     feature_extractor: Wav2Vec2FeatureExtractor
     tokenizer: Wav2Vec2CTCTokenizer
