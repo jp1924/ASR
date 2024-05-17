@@ -3,7 +3,7 @@ from typing import Dict, List, Optional, Union
 
 import torch
 
-from transformers import AutoProcessor, Wav2Vec2FeatureExtractor, Wav2Vec2ForPreTraining
+from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForPreTraining, Wav2Vec2Processor
 from transformers.data.data_collator import DataCollatorMixin
 from transformers.models.wav2vec2.modeling_wav2vec2 import (
     _compute_mask_indices,
@@ -113,20 +113,21 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
 
 @dataclass
 class DataCollatorCTCWithPadding(DataCollatorMixin):
-    processor: AutoProcessor
+    processor: Wav2Vec2Processor
     padding: Union[bool, str] = "longest"
+    return_tensors: str = "pt"
     pad_to_multiple_of: Optional[int] = None
     pad_to_multiple_of_labels: Optional[int] = None
     feature_extractor_input_name: Optional[str] = "input_values"
 
     def torch_call(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         input_features = [
-            {self.feature_extractor_input_name: feature[self.feature_extractor_input_name]} for feature in features
+            {self.feature_extractor_input_name: feature[self.feature_extractor_input_name][0]} for feature in features
         ]
         label_features = [{"input_ids": feature["labels"]} for feature in features]
 
         batch = self.processor.pad(
-            input_features,
+            input_features=input_features,
             padding=self.padding,
             pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors="pt",
