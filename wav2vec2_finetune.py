@@ -33,12 +33,12 @@ from utils import (
 )
 
 from transformers import (
+    AutoConfig,
+    AutoFeatureExtractor,
+    AutoModelForCTC,
+    AutoTokenizer,
     HfArgumentParser,
     Trainer,
-    Wav2Vec2ConformerConfig,
-    Wav2Vec2ConformerForCTC,
-    Wav2Vec2CTCTokenizer,
-    Wav2Vec2FeatureExtractor,
     Wav2Vec2Processor,
     is_torch_xla_available,
     is_wandb_available,
@@ -162,27 +162,20 @@ def main(train_args: Wav2Vec2FinetuningArguments):
         return {"wer": wer_score, "cer": cer_score}
 
     model_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
-    config = Wav2Vec2ConformerConfig.from_pretrained(
+    config = AutoConfig.from_pretrained(
         model_path,
         attn_implementation=train_args.attn_implementation,
     )
 
     # load model, feature_extractor, tokenizer
     if os.path.exists(os.path.join(model_path, SAFE_WEIGHTS_NAME)):
-        model = Wav2Vec2ConformerForCTC.from_pretrained(model_path)
+        model = AutoModelForCTC.from_pretrained(model_path)
     else:
-        model = Wav2Vec2ConformerForCTC(config)
+        model = AutoModelForCTC(config)
 
-    tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(model_path)
-    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    feature_extractor = AutoFeatureExtractor.from_pretrained(model_path)
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
-
-    # for vscode intellisence
-    model: Wav2Vec2ConformerForCTC
-    config: Wav2Vec2ConformerConfig
-    feature_extractor: Wav2Vec2FeatureExtractor
-    tokenizer: Wav2Vec2CTCTokenizer
-    processor: Wav2Vec2Processor
 
     # NOTE: Trainer에서 자동으로 해줌, 하지만 확인을 위해 이렇게 선언 함.
     if train_args.gradient_checkpointing:
