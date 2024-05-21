@@ -3,10 +3,9 @@ export WANDB_DISABLED="false"
 
 export TORCH_DISTRIBUTED_DEBUG="DETAIL"
 export TORCHDYNAMO_DISABLE="1"
-export CUDA_VISIBLE_DEVICES="0"
 
 export OMP_NUM_THREADS=2
-python3 \
+deepspeed --num_gpus=4 \
     /root/workspace/wav2vec2_pretrain.py \
     --output_dir=/root/output_dir/pretrain \
     --run_name=wav2vec2-pretrain \
@@ -43,4 +42,5 @@ python3 \
     --gradient_checkpointing=false \
     --remove_unused_columns=true \
     --group_by_length=true \
-    --torch_compile=true
+    --torch_compile=true \
+    --deepspeed=/root/workspace/ds_config/ZeRO_2.json
