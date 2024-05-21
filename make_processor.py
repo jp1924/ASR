@@ -32,9 +32,11 @@ def main() -> None:
 
     dataset_name_ls = [
         "jp1924/KsponSpeech",
-        "jp1924/KsponSpeech",
+        "jp1924/KoreanSpeech",
         "jp1924/KconfSpeech",
         "jp1924/KrespSpeech",
+        "jp1924/BroadcastSpeech",
+        "jp1924/MeetingSpeech",
     ]
     dataset_ls = list()
     for dataset_name in dataset_name_ls:
