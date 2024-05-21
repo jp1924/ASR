@@ -81,27 +81,8 @@ class Wav2Vec2FinetuningArguments(TrainingArguments):
             "help": "If set will pad the sequence to a multiple of the provided value. This is especially useful to enable the use of Tensor Cores on NVIDIA hardware with compute capability >= 7.5 (Volta)."
         },
     )
-    max_gumbel_temperature: float = field(
-        default=2.0,
-        metadata={"help": "Maximum temperature for gumbel softmax."},
+
+    attn_implementation: str = field(
+        default="eager",
+        metadata={"help": ""},
     )
-    min_gumbel_temperature: float = field(
-        default=0.5,
-        metadata={"help": "Minimum temperature for gumbel softmax."},
-    )
-    gumbel_temperature_decay: float = field(
-        default=0.999995, metadata={"help": "Decay of gumbel temperature during training."}
-    )
-    mask_time_prob: float = field(
-        default=None,
-        metadata={
-            "help": "Percentage (between 0 and 1) of all feature vectors along the time axis which will be masked in the contrastive task. If omitted, will pull value from model config."
-        },
-    )
-    mask_time_length: int = field(
-        default=None,
-        metadata={
-            "help": "Length of each vector mask span to mask along the time axis in the contrastive task. If omitted, will pull value from model config."
-        },
-    )
-    attn_implementation: str = field(default=None)
