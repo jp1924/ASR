@@ -9,7 +9,7 @@ services:
       - ./:/root/workspace
       - ~/.cache:/root/.cache
       - ./.vscode:/root/.vscode
-      - ~/output_dir:/root/output_dir
+      - ~/output_dir/wav2vec2:/root/output_dir
     tty: true
     shm_size: 126G
     environment:
