@@ -1,8 +1,13 @@
+export WANDB_PROJECT="Wav2Vec2"
+export WANDB_RUN_GROUP="finetune"
+
 export WANDB_WATCH="none"
 export WANDB_DISABLED="false"
+export WANDB_DISABLE_CODE="false"
 
 export TORCH_DISTRIBUTED_DEBUG="DETAIL"
 export TORCHDYNAMO_DISABLE="1"
+export CUDA_VISIBLE_DEVICES="0,1,2,3"
 
 export OMP_NUM_THREADS=2
 torchrun --nproc_per_node=4 \
@@ -33,7 +38,7 @@ torchrun --nproc_per_node=4 \
     --logging_strategy=steps \
     --logging_steps=1 \
     --fp16=true \
-    --dataset_names jp1924/KsponSpeech jp1924/KoreanSpeech jp1924/KconfSpeech jp1924/KrespSpeech jp1924/MeetingSpeech \
+    --dataset_names jp1924/KsponSpeech jp1924/KoreanSpeech jp1924/KconfSpeech jp1924/KrespSpeech jp1924/MeetingSpeech jp1924/BroadcastSpeech \
     --train_dataset_prefix train \
     --valid_dataset_prefix validation dev \
     --test_dataset_prefix eval_clean eval_other \

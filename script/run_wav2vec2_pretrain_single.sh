@@ -1,5 +1,9 @@
+export WANDB_PROJECT="Wav2Vec2"
+export WANDB_RUN_GROUP="pretrain"
+
 export WANDB_WATCH="none"
-export WANDB_DISABLED="false"
+export WANDB_DISABLED="true"
+export WANDB_DISABLE_CODE="false"
 
 export TORCH_DISTRIBUTED_DEBUG="DETAIL"
 export TORCHDYNAMO_DISABLE="1"
@@ -10,7 +14,7 @@ python3 \
     /root/workspace/wav2vec2_pretrain.py \
     --output_dir=/root/output_dir/pretrain \
     --run_name=wav2vec2-pretrain \
-    --model_name_or_path=/root/init_model \
+    --model_name_or_path=/root/output_dir/pretrain/wav2vec2_conformer-kspon/last_model \
     --preprocessing_num_workers=20 \
     --per_device_train_batch_size=4 \
     --gradient_accumulation_steps=2 \
@@ -22,7 +26,7 @@ python3 \
     --do_train=true \
     --do_eval=true \
     --do_predict=true \
-    --report_to=wandb \
+    --report_to=none \
     --learning_rate=0.001 \
     --lr_scheduler_type=cosine \
     --warmup_ratio=0.4 \
@@ -34,7 +38,7 @@ python3 \
     --logging_strategy=steps \
     --logging_steps=1 \
     --fp16=true \
-    --dataset_names jp1924/KsponSpeech jp1924/KoreanSpeech jp1924/KconfSpeech jp1924/KrespSpeech jp1924/MeetingSpeech \
+    --dataset_names jp1924/KsponSpeech jp1924/KoreanSpeech jp1924/KconfSpeech jp1924/KrespSpeech jp1924/MeetingSpeech jp1924/BroadcastSpeech \
     --train_dataset_prefix train \
     --valid_dataset_prefix dev validation \
     --test_dataset_prefix eval_clean eval_other \
