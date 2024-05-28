@@ -3,7 +3,7 @@ line-length = 119
 
 [lint]
 # Never enforce `E501` (line length violations).
-ignore = ["C901", "E501", "E741", "F402", "F823"]
+ignore = ["C901", "E501", "E741", "F402", "F823", "C408"]
 select = ["C", "E", "F", "I", "W"]
 
 [lint.isort]
