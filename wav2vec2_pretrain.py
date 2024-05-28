@@ -249,6 +249,9 @@ def main(train_args: Wav2Vec2PretrainingArguments):
         part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
         part_dataset = valid_dataset.select(part_idx, keep_in_memory=False)
 
+        if len(part_dataset) > 3000:
+            part_dataset = part_dataset.shuffle().select(range(3000))
+
         # 'jp1924/KconfSpeech-validation'
         start = dataset_name.rindex("/") + 1
         end = dataset_name.rindex("-")
