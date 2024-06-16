@@ -7,7 +7,7 @@ from transformers import TrainingArguments
 @dataclass
 class Wav2Vec2PretrainingArguments(TrainingArguments):
     # data
-    dataset_names: List[str] = field(
+    dataset_repo_ls: List[str] = field(
         default=None,
         metadata={"help": "The name of the dataset to use (via the datasets library)."},
     )

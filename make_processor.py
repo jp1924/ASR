@@ -30,7 +30,7 @@ def main() -> None:
     vocab_file_path = "./vocab.json"
     save_dir_path = "/root/model"
 
-    dataset_name_ls = [
+    dataset_repo_ls = [
         "jp1924/KsponSpeech",
         "jp1924/KoreanSpeech",
         "jp1924/KconfSpeech",
@@ -39,8 +39,8 @@ def main() -> None:
         "jp1924/MeetingSpeech",
     ]
     dataset_ls = list()
-    for dataset_name in dataset_name_ls:
-        dataset = load_dataset(dataset_name, split="train")
+    for dataset_repo in dataset_repo_ls:
+        dataset = load_dataset(dataset_repo, split="train")
         dataset = dataset.select_columns(["sentence"])
         dataset_ls.append(dataset)
 

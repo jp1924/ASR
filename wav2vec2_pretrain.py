@@ -1,26 +1,9 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2021 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-
-"""Pre-Training a 🤗 Wav2Vec2 model on unlabeled audio data"""
-
 import os
 from typing import Any, Dict, List, Optional, Union
 
 import torch
 from data import DataCollatorForWav2Vec2Pretraining
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset, Features, Value, concatenate_datasets, load_dataset
 from setproctitle import setproctitle
 from utils import (
     SAFE_WEIGHTS_NAME,
@@ -49,15 +32,14 @@ hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
 
 global GLOBAL_LOGGER
-GLOBAL_LOGGER = None
 
 
-def main(train_args: Wav2Vec2PretrainingArguments):
+def main(train_args: Wav2Vec2PretrainingArguments) -> None:
     def preprocessor(example: Dict[str, Union[List[Any], List[List[Any]]]]) -> Dict[str, List[Any]]:
-        sentence_ls = example["sentence"]
+        sentence_ls = example[train_args.sentence_column_name]
         sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
 
-        audio_ls = example["audio"]
+        audio_ls = example[train_args.audio_column_name]
         audio_ls = audio_ls if isinstance(audio_ls, list) else [audio_ls]
         audio_ls = [audio["array"] for audio in audio_ls]
 
@@ -155,24 +137,13 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_path)
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
 
-    # for vscode intellisence
-    model: Wav2Vec2ConformerForPreTraining
-    config: Wav2Vec2ConformerConfig
-    feature_extractor: Wav2Vec2FeatureExtractor
-    tokenizer: Wav2Vec2CTCTokenizer
-    processor: Wav2Vec2Processor
-
-    # NOTE: Trainer에서 자동으로 해줌, 하지만 확인을 위해 이렇게 선언 함.
-    if train_args.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
-
     # set logger
     if GLOBAL_LOGGER and (train_args.local_rank == 0):
         set_wandb()
 
     # load dataset & preprocess
     data_dict = dict()
-    for dataset_name in train_args.dataset_names:
+    for dataset_name in train_args.dataset_repo_ls:
         logger.info(f"load-{dataset_name}")
         dataset = load_dataset(dataset_name)
 
@@ -188,6 +159,15 @@ def main(train_args: Wav2Vec2PretrainingArguments):
                 name = dataset_name.split("/")[-1]
                 cache_file_name = {x: get_cache_path(x) for x in dataset}
 
+            # NOTE: 어떤 이슈 였는지 기억은 나질 않지만, 이렇게 하면 속도가 2배 이상 더 빨라진다는 개발자의 오피셜이 있었음.
+            features = Features(
+                {
+                    "labels": Value("string"),
+                    "input_values": Value("float32"),
+                    "length": Value("int32"),
+                }
+            )
+
             # NOTE: finetune에서 사용할 데이터 Pretrain에서 전처리 함
             # 만약 순수 음성만 넣을 거라면 sentence 부분을 ""로 비워든 상태로 돌리면 정상적으로 진행 됨
             dataset = dataset.map(
@@ -198,6 +178,7 @@ def main(train_args: Wav2Vec2PretrainingArguments):
                 cache_file_names=cache_file_name,
                 batch_size=train_args.preprocessing_batch_size,
                 remove_columns=column_names,
+                features=features,
                 desc=f"preprocess-{dataset_name}",
             )
         for data_key in dataset:
@@ -223,6 +204,27 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     valid_dataset = None
     if train_args.do_eval:
         valid_dataset = collect_dataset(train_args.valid_dataset_prefix)
+
+        valid_dataset_dict = dict()
+        valid_name_ls = valid_dataset["dataset_name"]
+        for dataset_name in set(valid_name_ls):
+            part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
+            part_dataset = valid_dataset.select(part_idx, keep_in_memory=False)
+
+            # 'jp1924/KconfSpeech-validation'
+            start = dataset_name.rindex("/") + 1
+            end = dataset_name.rindex("-")
+
+            if dataset_name[start:end] in train_args.valid_exclude_ls:
+                continue
+
+            if len(part_dataset) > train_args.valid_truncate_num:
+                part_dataset = part_dataset.shuffle(train_args.seed)
+                part_dataset = part_dataset.select(range(train_args.valid_truncate_num))
+
+            valid_dataset_dict[dataset_name[start:end]] = part_dataset
+        valid_dataset = valid_dataset_dict
+
         if (train_args.local_rank == 0) and valid_dataset:
             valid_total_length = sum(valid_dataset["length"])
             logger.info("valid_dataset")
@@ -241,25 +243,6 @@ def main(train_args: Wav2Vec2PretrainingArguments):
     # 6898663 >> 3.3% 정도 필터링 됨. 여기엔 tokenizing할 수 없는 문자, 음성 길이가 맞지 않는 문자 등 여러 요인으로 인해 필터링 된 데이터가 포함
     # 7136987
     # 238324
-
-    valid_dataset_dict = dict()
-    valid_exclude_ls = []
-    valid_name_ls = valid_dataset["dataset_name"]
-    for dataset_name in set(valid_name_ls):
-        part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
-        part_dataset = valid_dataset.select(part_idx, keep_in_memory=False)
-
-        if len(part_dataset) > 3000:
-            part_dataset = part_dataset.shuffle().select(range(3000))
-
-        # 'jp1924/KconfSpeech-validation'
-        start = dataset_name.rindex("/") + 1
-        end = dataset_name.rindex("-")
-
-        if dataset_name[start:end] in valid_exclude_ls:
-            continue
-
-        valid_dataset_dict[dataset_name[start:end]] = part_dataset
 
     # set collator
     collator = DataCollatorForWav2Vec2Pretraining(

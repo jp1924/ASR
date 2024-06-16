@@ -21,7 +21,7 @@ class SchedulerType(ExplicitEnum):
     REDUCE_ON_PLATEAU = "reduce_lr_on_plateau"
     COSINE_WITH_MIN_LR = "cosine_with_min_lr"
     WARMUP_STABLE_DECAY = "warmup_stable_decay"
-    TRI_STAGE = "tri_stage"
+    TRI_STAGE = "tri_stage"  # 추가됨
 
 
 def _get_tri_stage_schedule_with_warmup_lr_lambda(
@@ -77,6 +77,7 @@ def set_scheduler():
     NEW_TYPE_TO_SCHEDULER_FUNCTION = TYPE_TO_SCHEDULER_FUNCTION
     NEW_TYPE_TO_SCHEDULER_FUNCTION.update({SchedulerType.TRI_STAGE: get_tri_stage_schedule_with_warmup_lr_lambda})
 
+    # NOTE: 빼놓고 추가하지 않은 곳이 있으면 정상동작 안할 가능성이 존재함. 확인 필요
     module = importlib.import_module("transformers.optimization")
     setattr(module, "TYPE_TO_SCHEDULER_FUNCTION", NEW_TYPE_TO_SCHEDULER_FUNCTION)
 
