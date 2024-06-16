@@ -9,7 +9,6 @@ from datasets import Dataset, Features, Value, concatenate_datasets, load_datase
 from evaluate import load
 from setproctitle import setproctitle
 from utils import (
-    SAFE_WEIGHTS_NAME,
     Wav2Vec2FinetuningArguments,
     default_sentence_norm,
     get_feat_extract_output_lengths,
@@ -94,7 +93,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
 
         data_ls = list()
         for prefix in prefix_ls:
-            check_key: str = lambda key: (prefix in key)
+            check_key: str = lambda key: (prefix in key)  # noqa: E731
             filter_data = [
                 concatenate_datasets(data_dict.pop(key)) for key in list(data_dict.keys()) if check_key(key)
             ]
@@ -176,7 +175,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         with train_args.main_process_first(desc="data preprocess"):
             cache_file_name = None
             if train_args.cache_file_name:
-                get_cache_path: str = lambda x: os.path.join(
+                get_cache_path: str = lambda x: os.path.join(  # noqa: E731
                     train_args.cache_dir,
                     f"{name}-{x}_{train_args.cache_file_name}",
                 )
