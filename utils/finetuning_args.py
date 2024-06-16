@@ -6,17 +6,23 @@ from transformers import TrainingArguments
 from .optimization import SchedulerType, set_scheduler
 
 
+# NOTE: 스케줄러 애러 땜에 여기 있어야 함.
 set_scheduler()
 
 
 @dataclass
 class Wav2Vec2FinetuningArguments(TrainingArguments):
+    # 이걸 해야 스케줄러가 정상적으로 적용됨.
     lr_scheduler_type: Union[SchedulerType, str] = field(
         default="linear",
         metadata={"help": "The scheduler type to use."},
     )
     # data
-    dataset_names: List[str] = field(
+    dataset_repo_ls: List[str] = field(
+        default=None,
+        metadata={"help": "The name of the dataset to use (via the datasets library)."},
+    )
+    noise_dataset_repo_ls: List[str] = field(
         default=None,
         metadata={"help": "The name of the dataset to use (via the datasets library)."},
     )

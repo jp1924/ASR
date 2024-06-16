@@ -1,26 +1,11 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2021 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-
 import os
 import unicodedata
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
-from data import DataCollatorCTCWithPadding
-from datasets import Dataset, concatenate_datasets, load_dataset
+from data import DataCollatorCTCWithPadding, HFAddBackgroundNoise
+from datasets import Dataset, Features, Value, concatenate_datasets, load_dataset
 from evaluate import load
 from setproctitle import setproctitle
 from utils import (
@@ -48,21 +33,21 @@ from transformers import logging as hf_logging
 from transformers.trainer_utils import EvalPrediction
 
 
+# NOTE: 이걸 해야 tri-stage scheduler를 사용할 수 있음.
 set_scheduler()
 
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
 
 global GLOBAL_LOGGER
-GLOBAL_LOGGER = None
 
 
-def main(train_args: Wav2Vec2FinetuningArguments):
+def main(train_args: Wav2Vec2FinetuningArguments) -> None:
     def preprocessor(example: Dict[str, Union[List[Any], List[List[Any]]]]) -> Dict[str, List[Any]]:
-        sentence_ls = example["sentence"]
+        sentence_ls = example[train_args.sentence_column_name]
         sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
 
-        audio_ls = example["audio"]
+        audio_ls = example[train_args.audio_column_name]
         audio_ls = audio_ls if isinstance(audio_ls, list) else [audio_ls]
         audio_ls = [audio["array"] for audio in audio_ls]
 
@@ -144,6 +129,10 @@ def main(train_args: Wav2Vec2FinetuningArguments):
             GLOBAL_LOGGER.watch(model, log=_watch_model, log_freq=max(100, train_args.logging_steps))
         GLOBAL_LOGGER.run._label(code="transformers_trainer")
 
+    def audio_augmentate(audio_batch: torch.Tensor) -> torch.Tensor:
+        audio_batch = augmentator(audio_batch)
+        return audio_batch
+
     def compute_metrics(pred: EvalPrediction) -> Dict[str, float]:
         pred_logits = pred.predictions
         pred_ids = np.argmax(pred_logits, axis=-1)
@@ -156,30 +145,21 @@ def main(train_args: Wav2Vec2FinetuningArguments):
         pred_str = [unicodedata.normalize("NFC", x) for x in pred_str]
         label_str = [unicodedata.normalize("NFC", x) for x in label_str]
 
-        wer_score = wer.compute(predictions=pred_str, references=label_str)
-        cer_score = cer.compute(predictions=pred_str, references=label_str)
+        wer_score = wer_metric.compute(predictions=pred_str, references=label_str)
+        cer_score = cer_metric.compute(predictions=pred_str, references=label_str)
 
         return {"wer": wer_score, "cer": cer_score}
 
+    # load model, feature_extractor, tokenizer
     model_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
     config = AutoConfig.from_pretrained(
         model_path,
         attn_implementation=train_args.attn_implementation,
     )
-
-    # load model, feature_extractor, tokenizer
-    if os.path.exists(os.path.join(model_path, SAFE_WEIGHTS_NAME)):
-        model = AutoModelForCTC.from_pretrained(model_path)
-    else:
-        model = AutoModelForCTC(config)
-
+    model = AutoModelForCTC.from_pretrained(model_path, config=config)
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     feature_extractor = AutoFeatureExtractor.from_pretrained(model_path)
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
-
-    # NOTE: Trainer에서 자동으로 해줌, 하지만 확인을 위해 이렇게 선언 함.
-    if train_args.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
 
     # set logger
     if GLOBAL_LOGGER and (train_args.local_rank == 0):
@@ -187,7 +167,7 @@ def main(train_args: Wav2Vec2FinetuningArguments):
 
     # load dataset & preprocess
     data_dict = dict()
-    for dataset_name in train_args.dataset_names:
+    for dataset_name in train_args.dataset_repo_ls:
         logger.info(f"load-{dataset_name}")
         dataset = load_dataset(dataset_name)
 
@@ -203,6 +183,15 @@ def main(train_args: Wav2Vec2FinetuningArguments):
                 name = dataset_name.split("/")[-1]
                 cache_file_name = {x: get_cache_path(x) for x in dataset}
 
+            # NOTE: 어떤 이슈 였는지 기억은 나질 않지만, 이렇게 하면 속도가 2배 이상 더 빨라진다는 개발자의 오피셜이 있었음.
+            features = Features(
+                {
+                    "labels": Value("string"),
+                    "input_values": Value("float32"),
+                    "length": Value("int32"),
+                }
+            )
+
             # NOTE: finetune에서 사용할 데이터 Pretrain에서 전처리 함
             # 만약 순수 음성만 넣을 거라면 sentence 부분을 ""로 비워든 상태로 돌리면 정상적으로 진행 됨
             dataset = dataset.map(
@@ -213,6 +202,7 @@ def main(train_args: Wav2Vec2FinetuningArguments):
                 cache_file_names=cache_file_name,
                 batch_size=train_args.preprocessing_batch_size,
                 remove_columns=column_names,
+                features=features,
                 desc=f"preprocess-{dataset_name}",
             )
         for data_key in dataset:
@@ -226,9 +216,30 @@ def main(train_args: Wav2Vec2FinetuningArguments):
 
             data_dict[data_key].append(specific_dataset)
 
+    noise_dataset = None
+    for dataset_name in train_args.noise_dataset_repo_ls:
+        logger.info(f"load-{dataset_name}")
+        dataset = load_dataset(dataset_name)
+        dataset = dataset.select_columns(train_args.audio_column_name)
+        dataset = [dataset]
+
+        if noise_dataset:
+            dataset.append(noise_dataset)
+
+        noise_dataset = concatenate_datasets(dataset)
+
+    if noise_dataset:
+        noise_dataset.set_format("torch")
+
+        augmentator = HFAddBackgroundNoise()
+
     train_dataset = None
     if train_args.do_train:
         train_dataset = collect_dataset(train_args.train_dataset_prefix)
+
+        if noise_dataset:
+            train_dataset.set_transform(audio_augmentate, columns=train_args.audio_column_name)
+
         if (train_args.local_rank == 0) and train_dataset:
             train_total_length = sum(train_dataset["length"])
             logger.info("train_dataset")
@@ -238,6 +249,30 @@ def main(train_args: Wav2Vec2FinetuningArguments):
     valid_dataset = None
     if train_args.do_eval:
         valid_dataset = collect_dataset(train_args.valid_dataset_prefix)
+
+        # if noise_dataset:
+        #     valid_dataset.set_transform(audio_augmentate, columns=train_args.audio_column_name)
+
+        valid_dataset_dict = dict()
+        valid_name_ls = valid_dataset["dataset_name"]
+        for dataset_name in set(valid_name_ls):
+            part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
+            part_dataset = valid_dataset.select(part_idx, keep_in_memory=False)
+
+            # 'jp1924/KconfSpeech-validation'
+            start = dataset_name.rindex("/") + 1
+            end = dataset_name.rindex("-")
+
+            if dataset_name[start:end] in train_args.valid_exclude_ls:
+                continue
+
+            if len(part_dataset) > train_args.valid_truncate_num:
+                part_dataset = part_dataset.shuffle(train_args.seed)
+                part_dataset = part_dataset.select(range(train_args.valid_truncate_num))
+
+            valid_dataset_dict[dataset_name[start:end]] = part_dataset
+        valid_dataset = valid_dataset_dict
+
         if (train_args.local_rank == 0) and valid_dataset:
             valid_total_length = sum(valid_dataset["length"])
             logger.info("valid_dataset")
@@ -247,6 +282,10 @@ def main(train_args: Wav2Vec2FinetuningArguments):
     test_dataset = None
     if train_args.do_predict:
         test_dataset = collect_dataset(train_args.test_dataset_prefix)
+
+        # if noise_dataset:
+        #     test_dataset.set_transform(audio_augmentate, columns=train_args.audio_column_name)
+
         if (train_args.local_rank == 0) and test_dataset:
             test_total_length = sum(test_dataset["length"])
             logger.info("test_dataset")
@@ -257,30 +296,14 @@ def main(train_args: Wav2Vec2FinetuningArguments):
     # 7136987
     # 238324
 
-    valid_dataset_dict = dict()
-    valid_exclude_ls = []
-    valid_name_ls = valid_dataset["dataset_name"]
-    for dataset_name in set(valid_name_ls):
-        part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
-        part_dataset = valid_dataset.select(part_idx, keep_in_memory=False)
-
-        # 'jp1924/KconfSpeech-validation'
-        start = dataset_name.rindex("/") + 1
-        end = dataset_name.rindex("-")
-
-        if dataset_name[start:end] in valid_exclude_ls:
-            continue
-
-        valid_dataset_dict[dataset_name[start:end]] = part_dataset
-
     # set collator
     collator = DataCollatorCTCWithPadding(
         processor=processor,
         pad_to_multiple_of=train_args.pad_to_multiple_of,
     )
 
-    wer = load("wer")
-    cer = load("cer")
+    wer_metric = load("wer")
+    cer_metric = load("cer")
 
     if train_args.torch_compile:
         model = torch.compile(
