@@ -27,10 +27,6 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         default="audio",
         metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'audio'"},
     )
-    sentence_column_name: str = field(
-        default="sentence",
-        metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'sentence'"},
-    )
     min_duration_in_seconds: float = field(
         default=8000.0,
         metadata={"help": "Filter out audio files that are longer than `min_duration_in_seconds` seconds"},
