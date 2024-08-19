@@ -256,7 +256,7 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
         model=model,
         data_collator=collator,
         train_dataset=train_dataset,
-        eval_dataset=valid_dataset_dict,
+        eval_dataset=valid_dataset,
         tokenizer=processor,
         args=train_args,
     )

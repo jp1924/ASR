@@ -310,7 +310,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         tokenizer=processor,
         data_collator=collator,
         train_dataset=train_dataset,
-        eval_dataset=valid_dataset_dict,
+        eval_dataset=valid_dataset,
         compute_metrics=compute_metrics,
     )
     if train_args.do_train and train_dataset:
