@@ -38,7 +38,7 @@ torchrun --nproc_per_node=4 \
     --logging_strategy=steps \
     --logging_steps=1 \
     --fp16=true \
-    --dataset_names jp1924/KsponSpeech jp1924/KoreanSpeech jp1924/KconfSpeech jp1924/KrespSpeech jp1924/MeetingSpeech jp1924/BroadcastSpeech \
+    --dataset_repo_ls jp1924/KsponSpeech jp1924/KoreanSpeech jp1924/KconfSpeech jp1924/KrespSpeech jp1924/MeetingSpeech jp1924/BroadcastSpeech \
     --train_dataset_prefix train \
     --valid_dataset_prefix dev validation \
     --test_dataset_prefix eval_clean eval_other \
