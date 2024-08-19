@@ -32,7 +32,7 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'sentence'"},
     )
     min_duration_in_seconds: float = field(
-        default=3584.0,
+        default=8000.0,
         metadata={"help": "Filter out audio files that are longer than `min_duration_in_seconds` seconds"},
     )
     max_duration_in_seconds: float = field(
@@ -96,3 +96,24 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         },
     )
     attn_implementation: str = field(default=None)
+
+    wandb_code_log_dir: str = field(
+        default="",
+        metadata={"help": ""},
+    )
+    sampling_rate: int = field(
+        default=16000,
+        metadata={"help": ""},
+    )
+    valid_exclude_ls: List[str] = field(
+        default=None,
+        metadata={"help": ""},
+    )
+    valid_truncate_num: int = field(
+        default=3000,
+        metadata={"help": ""},
+    )
+    split_valid: bool = field(
+        default=False,
+        metadata={"help": ""},
+    )
