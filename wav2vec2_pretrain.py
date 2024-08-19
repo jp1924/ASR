@@ -216,14 +216,13 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
                     logger.info(part_dataset)
                     logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
                 valid_dataset_dict[dataset_name[start:end]] = part_dataset
+            valid_dataset = valid_dataset_dict
         else:
             if (train_args.local_rank == 0) and valid_dataset:
                 valid_total_length = sum(valid_dataset[train_args.length_column_name])
                 logger.info("valid_dataset")
                 logger.info(valid_dataset)
                 logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
-
-        valid_dataset = valid_dataset_dict
 
     test_dataset = None
     if train_args.do_predict:
