@@ -5,12 +5,7 @@ import torch
 from data import DataCollatorForWav2Vec2Pretraining
 from datasets import Dataset, Features, Value, concatenate_datasets, load_dataset
 from setproctitle import setproctitle
-from utils import (
-    Wav2Vec2PretrainingArguments,
-    default_sentence_norm,
-    get_feat_extract_output_lengths,
-    librosa_silence_filter,
-)
+from utils import Wav2Vec2PretrainingArguments, librosa_silence_filter
 from wav2vec2_pretrainer import Wav2Vec2Pretrainer
 
 from transformers import (
@@ -34,49 +29,31 @@ GLOBAL_LOGGER = None
 
 def main(train_args: Wav2Vec2PretrainingArguments) -> None:
     def preprocessor(example: Dict[str, Union[List[Any], List[List[Any]]]]) -> Dict[str, List[Any]]:
-        sentence_ls = example[train_args.sentence_column_name]
-        sentence_ls = sentence_ls if isinstance(sentence_ls, list) else [sentence_ls]
-
         audio_ls = example[train_args.audio_column_name]
         audio_ls = audio_ls if isinstance(audio_ls, list) else [audio_ls]
         audio_ls = [audio["array"] for audio in audio_ls]
 
-        normalized_sentence_ls = list()
-        normalized_audio_ls = list()
         length_ls = list()
-        for sentence, audio in zip(sentence_ls, audio_ls):
+        norm_audio_ls = list()
+        for audio in audio_ls:
             audio = librosa_silence_filter(audio)
             audio_length = audio.shape[0]
 
-            if not audio.any():
+            duration_check = train_args.min_duration_in_seconds <= audio_length <= train_args.max_duration_in_seconds
+            if not (audio.any() and duration_check):
                 continue
 
-            if not train_args.min_duration_in_seconds <= audio_length <= train_args.max_duration_in_seconds:
-                continue
+            audio = processor(audio=audio, sampling_rate=train_args.sampling_rate)
+            audio = audio[main_input_name][0].tolist()
 
-            sentence = default_sentence_norm(sentence)
-            if not sentence:
-                continue
-
-            sentence = processor.tokenizer(sentence, return_attention_mask=False)["input_ids"]
-            label_length = len(sentence)
-
-            # NOTE: for CTC loss
-            feature_length = get_feat_extract_output_lengths(audio_length, config)
-            if label_length > feature_length:
-                continue
-
-            audio = processor.feature_extractor(audio, sampling_rate=train_args.sampling_rate)["input_values"]
-
-            normalized_sentence_ls.append(sentence)
-            normalized_audio_ls.append(audio[0].tolist())
+            norm_audio_ls.append(audio)
             length_ls.append(audio_length)
 
-        return {
-            "labels": normalized_sentence_ls,
-            "input_values": normalized_audio_ls,
+        outputs = {
+            main_input_name: norm_audio_ls,
             train_args.length_column_name: length_ls,
         }
+        return outputs
 
     def collect_dataset(prefix_ls: List[str]) -> Optional[Dataset]:
         if not prefix_ls:
@@ -123,6 +100,8 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
     model = AutoModelForPreTraining.from_pretrained(model_path, config=config)
     processor = AutoProcessor.from_pretrained(model_path)
 
+    main_input_name = model.main_input_name
+
     # set logger
     if GLOBAL_LOGGER and (train_args.local_rank == 0):
         set_wandb()
@@ -148,8 +127,7 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
             # NOTE: 어떤 이슈 였는지 기억은 나질 않지만, 이렇게 하면 속도가 2배 이상 더 빨라진다는 datasets 개발자의 오피셜이 있었음.
             features = Features(
                 {
-                    "labels": [Value("int32")],
-                    "input_values": [Value("float32")],
+                    main_input_name: [Value("float32")],
                     train_args.length_column_name: Value("int32"),
                 }
             )
