@@ -92,3 +92,24 @@ class Wav2Vec2FinetuningArguments(TrainingArguments):
         default="eager",
         metadata={"help": ""},
     )
+
+    wandb_code_log_dir: str = field(
+        default="",
+        metadata={"help": ""},
+    )
+    sampling_rate: int = field(
+        default=16000,
+        metadata={"help": ""},
+    )
+    valid_exclude_ls: List[str] = field(
+        default=None,
+        metadata={"help": ""},
+    )
+    valid_truncate_num: int = field(
+        default=3000,
+        metadata={"help": ""},
+    )
+    split_valid: bool = field(
+        default=False,
+        metadata={"help": ""},
+    )

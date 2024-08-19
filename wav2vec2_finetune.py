@@ -18,12 +18,10 @@ from utils import (
 
 from transformers import (
     AutoConfig,
-    AutoFeatureExtractor,
     AutoModelForCTC,
-    AutoTokenizer,
+    AutoProcessor,
     HfArgumentParser,
     Trainer,
-    Wav2Vec2Processor,
     is_torch_xla_available,
     is_wandb_available,
     set_seed,
@@ -67,7 +65,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
             if not sentence:
                 continue
 
-            sentence = tokenizer(sentence, return_attention_mask=False)["input_ids"]
+            sentence = processor.tokenizer(sentence, return_attention_mask=False)["input_ids"]
             label_length = len(sentence)
 
             # NOTE: for CTC loss
@@ -75,16 +73,16 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
             if label_length > feature_length:
                 continue
 
-            audio = feature_extractor(audio, sampling_rate=16000)["input_values"]
+            audio = processor.feature_extractor(audio, sampling_rate=train_args.sampling_rate)["input_values"]
 
             normalized_sentence_ls.append(sentence)
-            normalized_audio_ls.append(audio)
+            normalized_audio_ls.append(audio[0].tolist())
             length_ls.append(audio_length)
 
         return {
             "labels": normalized_sentence_ls,
             "input_values": normalized_audio_ls,
-            "length": length_ls,
+            train_args.length_column_name: length_ls,
         }
 
     def collect_dataset(prefix_ls: List[str]) -> Optional[Dataset]:
@@ -104,9 +102,8 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         return dataset
 
     def set_wandb() -> None:
-        # TODO: 이건 나중에 args로 바꿀 것
         GLOBAL_LOGGER.run.log_code(
-            "/root/workspace",
+            train_args.wandb_code_log_dir,
             include_fn=lambda path: path.endswith(".py") or path.endswith(".json"),
         )
         # logging args
@@ -136,11 +133,11 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         pred_logits = pred.predictions
         pred_ids = np.argmax(pred_logits, axis=-1)
 
-        pred.label_ids[pred.label_ids == -100] = tokenizer.pad_token_id
+        pred.label_ids[pred.label_ids == -100] = config.pad_token_id
 
-        pred_str = tokenizer.batch_decode(pred_ids)
+        pred_str = processor.batch_decode(pred_ids)
         # we do not want to group tokens when computing the metrics
-        label_str = tokenizer.batch_decode(pred.label_ids, group_tokens=False)
+        label_str = processor.batch_decode(pred.label_ids, group_tokens=False)
         pred_str = [unicodedata.normalize("NFC", x) for x in pred_str]
         label_str = [unicodedata.normalize("NFC", x) for x in label_str]
 
@@ -156,9 +153,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         attn_implementation=train_args.attn_implementation,
     )
     model = AutoModelForCTC.from_pretrained(model_path, config=config)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    feature_extractor = AutoFeatureExtractor.from_pretrained(model_path)
-    processor = Wav2Vec2Processor(feature_extractor, tokenizer)
+    processor = AutoProcessor.from_pretrained(model_path)
 
     # set logger
     if GLOBAL_LOGGER and (train_args.local_rank == 0):
@@ -185,9 +180,9 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
             # NOTE: 어떤 이슈 였는지 기억은 나질 않지만, 이렇게 하면 속도가 2배 이상 더 빨라진다는 개발자의 오피셜이 있었음.
             features = Features(
                 {
-                    "labels": Value("string"),
-                    "input_values": Value("float32"),
-                    "length": Value("int32"),
+                    "labels": [Value("int32")],
+                    "input_values": [Value("float32")],
+                    train_args.length_column_name: Value("int32"),
                 }
             )
 
@@ -240,7 +235,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
             train_dataset.set_transform(audio_augmentate, columns=train_args.audio_column_name)
 
         if (train_args.local_rank == 0) and train_dataset:
-            train_total_length = sum(train_dataset["length"])
+            train_total_length = sum(train_dataset[train_args.length_column_name])
             logger.info("train_dataset")
             logger.info(train_dataset)
             logger.info(f"train_total_hour: {(train_total_length / 16000) / 60**2:.2f}h")
@@ -249,51 +244,48 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
     if train_args.do_eval:
         valid_dataset = collect_dataset(train_args.valid_dataset_prefix)
 
-        # if noise_dataset:
-        #     valid_dataset.set_transform(audio_augmentate, columns=train_args.audio_column_name)
-
+        valid_exclude_ls = train_args.valid_exclude_ls or []
         valid_dataset_dict = dict()
         valid_name_ls = valid_dataset["dataset_name"]
-        for dataset_name in set(valid_name_ls):
-            part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
-            part_dataset = valid_dataset.select(part_idx, keep_in_memory=False)
+        if train_args.split_valid:
+            for dataset_name in set(valid_name_ls):
+                part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
+                part_dataset = valid_dataset.select(part_idx, keep_in_memory=False)
 
-            # 'jp1924/KconfSpeech-validation'
-            start = dataset_name.rindex("/") + 1
-            end = dataset_name.rindex("-")
+                # 'jp1924/KconfSpeech-validation'
+                start = dataset_name.rindex("/") + 1
+                end = dataset_name.rindex("-")
 
-            if dataset_name[start:end] in train_args.valid_exclude_ls:
-                continue
+                if dataset_name[start:end] in valid_exclude_ls:
+                    continue
 
-            if len(part_dataset) > train_args.valid_truncate_num:
-                part_dataset = part_dataset.shuffle(train_args.seed)
-                part_dataset = part_dataset.select(range(train_args.valid_truncate_num))
+                if len(part_dataset) > train_args.valid_truncate_num:
+                    part_dataset = part_dataset.shuffle(train_args.seed)
+                    part_dataset = part_dataset.select(range(train_args.valid_truncate_num))
 
-            valid_dataset_dict[dataset_name[start:end]] = part_dataset
+                if (train_args.local_rank == 0) and valid_dataset:
+                    valid_total_length = sum(part_dataset[train_args.length_column_name])
+                    logger.info(f"{dataset_name[start:end]}-valid_dataset")
+                    logger.info(part_dataset)
+                    logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
+                valid_dataset_dict[dataset_name[start:end]] = part_dataset
+        else:
+            if (train_args.local_rank == 0) and valid_dataset:
+                valid_total_length = sum(valid_dataset[train_args.length_column_name])
+                logger.info("valid_dataset")
+                logger.info(valid_dataset)
+                logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
+
         valid_dataset = valid_dataset_dict
-
-        if (train_args.local_rank == 0) and valid_dataset:
-            valid_total_length = sum(valid_dataset["length"])
-            logger.info("valid_dataset")
-            logger.info(valid_dataset)
-            logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
 
     test_dataset = None
     if train_args.do_predict:
         test_dataset = collect_dataset(train_args.test_dataset_prefix)
-
-        # if noise_dataset:
-        #     test_dataset.set_transform(audio_augmentate, columns=train_args.audio_column_name)
-
         if (train_args.local_rank == 0) and test_dataset:
-            test_total_length = sum(test_dataset["length"])
+            test_total_length = sum(test_dataset[train_args.length_column_name])
             logger.info("test_dataset")
             logger.info(test_dataset)
             logger.info(f"test_total_hour: {(test_total_length / 16000) / 60**2:.2f}h")
-
-    # 6898663 >> 3.3% 정도 필터링 됨. 여기엔 tokenizing할 수 없는 문자, 음성 길이가 맞지 않는 문자 등 여러 요인으로 인해 필터링 된 데이터가 포함
-    # 7136987
-    # 238324
 
     # set collator
     collator = DataCollatorCTCWithPadding(
