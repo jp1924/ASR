@@ -63,8 +63,8 @@ unidentification_filter_regex = re.compile(
     r"@이름[0-9]+|@상호명[0-9]+|@전화번호[0-9]+|@카드번호[0-9]+|@주민번호[0-9]+|@주소[0-9]+|@정당[0-9]+"
 )
 
-space_norm: str = lambda x: double_space_regex.sub(" ", x).strip()
-special_char_norm: str = lambda x: special_char_regex.sub("", x)
+space_norm: str = lambda x: double_space_regex.sub(" ", x).strip()  # noqa: E731
+special_char_norm: str = lambda x: special_char_regex.sub("", x)  # noqa: E731
 
 
 def normal_dual_transcript_extractor(
