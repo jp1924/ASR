@@ -197,7 +197,7 @@ def predict(trainer: Wav2Vec2Pretrainer, test_dataset: Optional[Union[Dataset, D
         start = dataset_name.rindex("/") + 1
         end = dataset_name.rindex("-")
 
-        outputs = trainer.predict(part_dataset, metric_key_prefix=f"test/{dataset_name[start:]}")
+        trainer.predict(part_dataset, metric_key_prefix=f"test/{dataset_name[start:end]}")
         # NOTE: trainer.log를 사용하면 train/test 처럼 찍혀서 나와서 wandb로 직접 찍음
         test_dataset_dict[dataset_name[start:end]] = part_dataset
 
