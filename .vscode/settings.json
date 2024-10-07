@@ -14,15 +14,15 @@
         "editor.formatOnPaste": true
     },
     "editor.codeActionsOnSave": {
-        "source.fixAll.markdownlint": true
+        "source.fixAll.markdownlint": "explicit"
     },
     "editor.minimap.renderCharacters": false,
     "editor.minimap.enabled": false,
     "ruff.lint.args": [
-        "--config=/home/jp/ruff.toml",
+        "--config=/root/workspace/ruff.toml",
     ],
     "ruff.format.args": [
-        "--config=/home/jp/ruff.toml"
+        "--config=/root/workspace/ruff.toml",
     ],
     "files.refactoring.autoSave": true,
     "ruff.lint.preview": true,
