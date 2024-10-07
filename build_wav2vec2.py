@@ -4,8 +4,10 @@ from datasets import concatenate_datasets, load_dataset
 from utils import default_sentence_norm
 
 from transformers import (
+    Wav2Vec2Config,
     Wav2Vec2CTCTokenizer,
     Wav2Vec2FeatureExtractor,
+    Wav2Vec2ForPreTraining,
     Wav2Vec2Processor,
 )
 
@@ -82,6 +84,9 @@ def main() -> None:
     )
     processor = Wav2Vec2Processor(feature_extractor, tokenizer)
     processor.save_pretrained(save_dir_path)
+
+    config = Wav2Vec2Config()
+    model = Wav2Vec2ForPreTraining(config)
 
 
 if "__main__" in __name__:
