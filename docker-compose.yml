@@ -1,4 +1,3 @@
-version: "1.0.0"
 services:
   train_container:
     container_name: wav2vec2-train
