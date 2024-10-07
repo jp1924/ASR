@@ -1,5 +1,6 @@
+import json
 from dataclasses import dataclass, field
-from typing import List, Union
+from typing import List, Optional, Union
 
 from transformers import TrainingArguments
 
@@ -46,6 +47,7 @@ class Wav2Vec2FinetuningArguments(TrainingArguments):
         default="sentence",
         metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'sentence'"},
     )
+
     min_duration_in_seconds: float = field(
         default=3584.0,
         metadata={"help": "Filter out audio files that are longer than `min_duration_in_seconds` seconds"},
@@ -54,18 +56,25 @@ class Wav2Vec2FinetuningArguments(TrainingArguments):
         default=448512.0,
         metadata={"help": "Filter out audio files that are shorter than `max_duration_in_seconds` seconds"},
     )
+
     train_dataset_prefix: List[str] = field(
         default="train",
-        metadata={"help": ""},
+        metadata={"help": "A prefix required to distinguish splits in the data loaded by load_dataset."},
     )
     valid_dataset_prefix: List[str] = field(
         default="validation",
-        metadata={"help": ""},
+        metadata={"help": "A prefix required to distinguish splits in the data loaded by load_dataset."},
     )
     test_dataset_prefix: List[str] = field(
         default="eval_other",
-        metadata={"help": ""},
+        metadata={"help": "A prefix required to distinguish splits in the data loaded by load_dataset."},
     )
+
+    data_truncate_map: Optional[Union[dict, str]] = field(
+        default=None,
+        metadata={"help": "A map to truncate part of the data. {‘repo_name’: {‘train’: 3000, ‘validation’: 1500}}."},
+    )
+
     cache_file_name: str = field(
         default=None,
         metadata={"help": "Path to cached file name"},
@@ -93,23 +102,15 @@ class Wav2Vec2FinetuningArguments(TrainingArguments):
         metadata={"help": ""},
     )
 
-    wandb_code_log_dir: str = field(
-        default="",
-        metadata={"help": ""},
-    )
     sampling_rate: int = field(
         default=16000,
         metadata={"help": ""},
     )
-    valid_exclude_ls: List[str] = field(
-        default=None,
-        metadata={"help": ""},
-    )
-    valid_truncate_num: int = field(
-        default=3000,
-        metadata={"help": ""},
-    )
-    split_valid: bool = field(
-        default=False,
-        metadata={"help": ""},
-    )
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.data_truncate_map = json.loads(self.data_truncate_map) if self.data_truncate_map else None
+
+        self.train_dataset_prefix = self.train_dataset_prefix if self.train_dataset_prefix else []
+        self.valid_dataset_prefix = self.valid_dataset_prefix if self.valid_dataset_prefix else []
+        self.test_dataset_prefix = self.test_dataset_prefix if self.test_dataset_prefix else []
