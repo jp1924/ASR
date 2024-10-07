@@ -10,9 +10,9 @@ from evaluate import load
 from setproctitle import setproctitle
 from utils import (
     Wav2Vec2FinetuningArguments,
-    default_sentence_norm,
     get_feat_extract_output_lengths,
     librosa_silence_filter,
+    sentence_normalizer,
     set_scheduler,
 )
 
@@ -22,6 +22,9 @@ from transformers import (
     AutoProcessor,
     HfArgumentParser,
     Trainer,
+    Wav2Vec2Config,
+    Wav2Vec2ForCTC,
+    Wav2Vec2Processor,
     set_seed,
 )
 from transformers import logging as hf_logging
@@ -46,24 +49,20 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
 
         finish_label_ls, finish_audio_ls, finish_length_ls = list(), list(), list()
         for sentence, audio in zip(sentence_ls, audio_ls):
-            audio = librosa_silence_filter(audio)
+            audio, sentence = librosa_silence_filter(audio), sentence_normalizer(sentence)
             audio_length = audio.shape[0]
 
-            if not audio.any():
+            if not audio.any() or not sentence:
                 continue
 
             if not train_args.min_duration_in_seconds <= audio_length <= train_args.max_duration_in_seconds:
                 continue
 
-            sentence = default_sentence_norm(sentence)
-            if not sentence:
-                continue
-
             sentence = processor.tokenizer(sentence, return_attention_mask=False)["input_ids"]
-            label_length = len(sentence)
 
             # NOTE: for CTC loss
             feature_length = get_feat_extract_output_lengths(audio_length, config)
+            label_length = len(sentence)
             if label_length > feature_length:
                 continue
 
@@ -169,9 +168,9 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
 
     # load model, feature_extractor, tokenizer
     model_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
-    config = AutoConfig.from_pretrained(model_path, attn_implementation=train_args.attn_implementation)
-    model = AutoModelForCTC.from_pretrained(model_path, config=config)
-    processor = AutoProcessor.from_pretrained(model_path)
+    config: Wav2Vec2Config = AutoConfig.from_pretrained(model_path, attn_implementation=train_args.attn_implementation)
+    model: Wav2Vec2ForCTC = AutoModelForCTC.from_pretrained(model_path, config=config)
+    processor: Wav2Vec2Processor = AutoProcessor.from_pretrained(model_path)
 
     main_input_name = model.main_input_name
 
@@ -240,7 +239,7 @@ def predict(trainer: Trainer, test_dataset: Optional[Union[Dataset, Dict[str, Da
         start = dataset_name.rindex("/") + 1
         end = dataset_name.rindex("-")
 
-        outputs = trainer.predict(part_dataset, metric_key_prefix=f"test/{dataset_name[start:]}")
+        trainer.predict(part_dataset, metric_key_prefix=f"test/{dataset_name[start:end]}")
 
         test_dataset_dict[dataset_name[start:end]] = part_dataset
 

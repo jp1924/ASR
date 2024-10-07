@@ -5,6 +5,7 @@ from unicodedata import normalize
 
 import librosa
 import numpy as np
+from kss import Kss
 
 from transformers import PretrainedConfig
 
@@ -65,6 +66,8 @@ unidentification_filter_regex = re.compile(
 
 space_norm: str = lambda x: double_space_regex.sub(" ", x).strip()  # noqa: E731
 special_char_norm: str = lambda x: special_char_regex.sub("", x)  # noqa: E731
+
+remove_invisible_chars = Kss("remove_invisible_chars")
 
 
 def normal_dual_transcript_extractor(
@@ -283,8 +286,11 @@ def librosa_silence_filter(audio: np.ndarray, filter_decibel: int = 30) -> np.nd
     return filtered_audio
 
 
-def default_sentence_norm(sentence: str) -> str:
+def sentence_normalizer(sentence: str) -> str:
     # KsponSpeech 기준
+    # 자/ 몸짱 열풍 다이어트에 성공하겠다.\xa0(5)/(오) 위 였구요.
+    # 이런 애들 norm 할려고 remove_invisible_chars를 추가함.
+    sentence = remove_invisible_chars(sentence)
     sentence = normalize("NFC", sentence)
     if "idiom" in sentence:
         # NOTE: idiom 어노테이션 개같이 되어 있어서 그냥 전부 필터링 함.
@@ -312,7 +318,10 @@ def default_sentence_norm(sentence: str) -> str:
     # NOTE: 느낌표나 물음표의 대부분은 문장이 끝났을 때 사용하게 됨. 그렇기 때문에 느낌표와 물음표는 마침표로 변환 함.
     sentence = sentence.replace("?", ".")
     sentence = sentence.replace("!", ".")
-    sentence = sentence.replace(":", "대")
+
+    # '그/ a: b 씨 고향이 여수라고 그러셨나요? b: (네)/(넹) 그렇긴 한데. 왜요? a:아 이번에 여수로 놀러 갈까 하는데 아는 맛 집 있으면 추천해 주십사하구요.b: 아/ 물론이죠. 이따가 리스트 정리해서 보내드릴게요.'
+    # : 에 대해서 이런 예외상황이 있긴 한데, 대를 해서 얻는 이득이 더 크다 생각해 이렇게 수행 함.
+    sentence = sentence.replace(":", " 대 ")
 
     # 차라리 띄어쓰는게 더 나을 듯. 특수문자 옆에 띄어쓰기가 깉이 있는 경우 `{ ` -> `  `가 되어서 norm 될 수 있을 듯
     # 다만 이렇지 않은 경우를 함 봐야 알 듯
