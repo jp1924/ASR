@@ -1,11 +1,11 @@
 import os
 import unicodedata
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from data import DataCollatorCTCWithPadding, HFAddBackgroundNoise
-from datasets import Dataset, Features, Value, concatenate_datasets, load_dataset
+from data import DataCollatorCTCWithPadding
+from datasets import Dataset, concatenate_datasets, load_dataset
 from evaluate import load
 from setproctitle import setproctitle
 from utils import (
@@ -22,12 +22,10 @@ from transformers import (
     AutoProcessor,
     HfArgumentParser,
     Trainer,
-    is_torch_xla_available,
-    is_wandb_available,
     set_seed,
 )
 from transformers import logging as hf_logging
-from transformers.trainer_utils import EvalPrediction
+from transformers.trainer_utils import EvalPrediction, is_main_process
 
 
 # NOTE: 이걸 해야 tri-stage scheduler를 사용할 수 있음.
@@ -35,8 +33,6 @@ set_scheduler()
 
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
-
-global GLOBAL_LOGGER
 
 
 def main(train_args: Wav2Vec2FinetuningArguments) -> None:
@@ -48,9 +44,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         audio_ls = audio_ls if isinstance(audio_ls, list) else [audio_ls]
         audio_ls = [audio["array"] for audio in audio_ls]
 
-        normalized_sentence_ls = list()
-        normalized_audio_ls = list()
-        length_ls = list()
+        finish_label_ls, finish_audio_ls, finish_length_ls = list(), list(), list()
         for sentence, audio in zip(sentence_ls, audio_ls):
             audio = librosa_silence_filter(audio)
             audio_length = audio.shape[0]
@@ -75,59 +69,86 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
 
             audio = processor.feature_extractor(audio, sampling_rate=train_args.sampling_rate)["input_values"]
 
-            normalized_sentence_ls.append(sentence)
-            normalized_audio_ls.append(audio[0].tolist())
-            length_ls.append(audio_length)
+            finish_label_ls.append(sentence)
+            finish_audio_ls.append(audio[0].tolist())
+            finish_length_ls.append(audio_length)
 
         return {
-            "labels": normalized_sentence_ls,
-            "input_values": normalized_audio_ls,
-            train_args.length_column_name: length_ls,
+            "labels": finish_label_ls,
+            main_input_name: finish_audio_ls,
+            train_args.length_column_name: finish_length_ls,
         }
 
-    def collect_dataset(prefix_ls: List[str]) -> Optional[Dataset]:
-        if not prefix_ls:
-            return None
+    def prepare_datasets() -> Tuple[Optional[Dataset], Optional[Dataset], Optional[Dataset]]:
+        train_dataset_ls = valid_dataset_ls = test_dataset_ls = list()
+        for repo_name in train_args.dataset_repo_ls:
+            logger.info(f"load-{repo_name}")
+            datasets = load_dataset(repo_name)
 
-        data_ls = list()
-        for prefix in prefix_ls:
-            check_key: str = lambda key: (prefix in key)  # noqa: E731
-            filter_data = [
-                concatenate_datasets(data_dict.pop(key)) for key in list(data_dict.keys()) if check_key(key)
-            ]
-            data_ls.extend(filter_data)
-        dataset = concatenate_datasets(data_ls)
-        dataset.set_format("torch")
+            if repo_name in train_args.data_truncate_map:
+                for data_type in train_args.data_truncate_map[repo_name]:
+                    truncate_size = train_args.data_truncate_map[repo_name][data_type]
+                    data = datasets[data_type].shuffle()
+                    if len(data) <= truncate_size:
+                        continue
 
-        return dataset
+                    datasets[data_type] = data.select(range(truncate_size))
 
-    def set_wandb() -> None:
-        GLOBAL_LOGGER.run.log_code(
-            train_args.wandb_code_log_dir,
-            include_fn=lambda path: path.endswith(".py") or path.endswith(".json"),
-        )
-        # logging args
-        combined_dict = {**train_args.to_dict()}
-        if hasattr(model, "config") and model.config is not None:
-            model_config = model.config.to_dict()
-            combined_dict = {**model_config, **combined_dict}
+            if train_args.cache_file_name:
+                get_cache_path: str = lambda x: os.path.join(  # noqa: E731
+                    train_args.cache_dir,
+                    f"{name}-{x}_{train_args.cache_file_name}",
+                )
+                name = repo_name.split("/")[-1]
+                train_args.cache_file_name = {x: get_cache_path(x) for x in datasets}
 
-        GLOBAL_LOGGER.config.update(combined_dict, allow_val_change=True)
+            # DatasetsDict이라서 이런식으로 해줘야 함.
+            with train_args.main_process_first(desc="data preprocess"):
+                datasets = datasets.map(
+                    preprocessor,
+                    num_proc=train_args.preprocessing_num_workers,
+                    load_from_cache_file=True,
+                    batched=train_args.preprocessing_batched,
+                    cache_file_names=train_args.cache_file_name,
+                    batch_size=train_args.preprocessing_batch_size,
+                    remove_columns=set(sum(datasets.column_names.values(), [])),
+                    desc=f"preprocess-{repo_name}",
+                )
+                datasets.set_format("pt")
 
-        # set default metrics
-        if getattr(GLOBAL_LOGGER, "define_metric", None):
-            GLOBAL_LOGGER.define_metric("train/global_step")
-            GLOBAL_LOGGER.define_metric("*", step_metric="train/global_step", step_sync=True)
+            for dataset_key in datasets:
+                if dataset_key in train_args.train_dataset_prefix and train_args.do_train:
+                    train_dataset_ls.append(datasets[dataset_key])
+                if dataset_key in train_args.valid_dataset_prefix and train_args.do_eval:
+                    valid_dataset_ls.append(datasets[dataset_key])
+                if dataset_key in train_args.test_dataset_prefix and train_args.do_predict:
+                    test_dataset_ls.append(datasets[dataset_key])
 
-        # set model watch
-        _watch_model = os.getenv("WANDB_WATCH", "false")
-        if not is_torch_xla_available() and _watch_model in ("all", "parameters", "gradients"):
-            GLOBAL_LOGGER.watch(model, log=_watch_model, log_freq=max(100, train_args.logging_steps))
-        GLOBAL_LOGGER.run._label(code="transformers_trainer")
+        train_dataset = None
+        if train_dataset_ls:
+            train_dataset = concatenate_datasets(train_dataset_ls)
+            if is_main_process(train_args.local_rank):
+                train_total_length = sum(train_dataset[train_args.length_column_name])
+                logger.info(f"train_dataset:\n{train_dataset}")
+                logger.info(f"train_total_hour: {(train_total_length / 16000) / 60**2:.2f}h")
 
-    def audio_augmentate(audio_batch: torch.Tensor) -> torch.Tensor:
-        audio_batch = augmentator(audio_batch)
-        return audio_batch
+        valid_dataset = None
+        if valid_dataset_ls:
+            valid_dataset = concatenate_datasets(valid_dataset_ls)
+            if is_main_process(train_args.local_rank):
+                valid_total_length = sum(valid_dataset[train_args.length_column_name])
+                logger.info(f"valid_dataset:\n{valid_dataset}")
+                logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
+
+        test_dataset = None
+        if test_dataset_ls:
+            test_dataset = concatenate_datasets(test_dataset_ls)
+            if is_main_process(train_args.local_rank):
+                test_total_length = sum(test_dataset[train_args.length_column_name])
+                logger.info(f"test_dataset:\n{test_dataset}")
+                logger.info(f"test_total_hour: {(test_total_length / 16000) / 60**2:.2f}h")
+
+        return (train_dataset, valid_dataset, test_dataset)
 
     def compute_metrics(pred: EvalPrediction) -> Dict[str, float]:
         pred_logits = pred.predictions
@@ -148,152 +169,11 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
 
     # load model, feature_extractor, tokenizer
     model_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
-    config = AutoConfig.from_pretrained(
-        model_path,
-        attn_implementation=train_args.attn_implementation,
-    )
+    config = AutoConfig.from_pretrained(model_path, attn_implementation=train_args.attn_implementation)
     model = AutoModelForCTC.from_pretrained(model_path, config=config)
     processor = AutoProcessor.from_pretrained(model_path)
 
-    # set logger
-    if GLOBAL_LOGGER and (train_args.local_rank == 0):
-        set_wandb()
-
-    # load dataset & preprocess
-    data_dict = dict()
-    for dataset_name in train_args.dataset_repo_ls:
-        logger.info(f"load-{dataset_name}")
-        dataset = load_dataset(dataset_name)
-
-        # DatasetDict이라서 이런식으로 해줘야 함.
-        column_names = set(sum(dataset.column_names.values(), []))
-        with train_args.main_process_first(desc="data preprocess"):
-            cache_file_name = None
-            if train_args.cache_file_name:
-                get_cache_path: str = lambda x: os.path.join(  # noqa: E731
-                    train_args.cache_dir,
-                    f"{name}-{x}_{train_args.cache_file_name}",
-                )
-                name = dataset_name.split("/")[-1]
-                cache_file_name = {x: get_cache_path(x) for x in dataset}
-
-            # NOTE: 어떤 이슈 였는지 기억은 나질 않지만, 이렇게 하면 속도가 2배 이상 더 빨라진다는 개발자의 오피셜이 있었음.
-            features = Features(
-                {
-                    "labels": [Value("int32")],
-                    "input_values": [Value("float32")],
-                    train_args.length_column_name: Value("int32"),
-                }
-            )
-
-            # NOTE: finetune에서 사용할 데이터 Pretrain에서 전처리 함
-            # 만약 순수 음성만 넣을 거라면 sentence 부분을 ""로 비워든 상태로 돌리면 정상적으로 진행 됨
-            dataset = dataset.map(
-                preprocessor,
-                num_proc=train_args.preprocessing_num_workers,
-                load_from_cache_file=True,
-                batched=train_args.preprocessing_batched,
-                cache_file_names=cache_file_name,
-                batch_size=train_args.preprocessing_batch_size,
-                remove_columns=column_names,
-                features=features,
-                desc=f"preprocess-{dataset_name}",
-            )
-        for data_key in dataset:
-            if data_key not in data_dict:
-                data_dict[data_key] = []
-
-            specific_dataset = dataset[data_key]
-
-            added_data = [f"{dataset_name}-{data_key}"] * len(specific_dataset)
-            specific_dataset = specific_dataset.add_column("dataset_name", added_data)
-
-            data_dict[data_key].append(specific_dataset)
-
-    noise_dataset = None
-    for dataset_name in train_args.noise_dataset_repo_ls:
-        logger.info(f"load-{dataset_name}")
-        dataset = load_dataset(dataset_name)
-        dataset = dataset.select_columns(train_args.audio_column_name)
-        dataset = [dataset]
-
-        if noise_dataset:
-            dataset.append(noise_dataset)
-
-        noise_dataset = concatenate_datasets(dataset)
-
-    if noise_dataset:
-        noise_dataset.set_format("torch")
-
-        augmentator = HFAddBackgroundNoise()
-
-    train_dataset = None
-    if train_args.do_train:
-        train_dataset = collect_dataset(train_args.train_dataset_prefix)
-
-        if noise_dataset:
-            train_dataset.set_transform(audio_augmentate, columns=train_args.audio_column_name)
-
-        if (train_args.local_rank == 0) and train_dataset:
-            train_total_length = sum(train_dataset[train_args.length_column_name])
-            logger.info("train_dataset")
-            logger.info(train_dataset)
-            logger.info(f"train_total_hour: {(train_total_length / 16000) / 60**2:.2f}h")
-
-    valid_dataset = None
-    if train_args.do_eval:
-        valid_dataset = collect_dataset(train_args.valid_dataset_prefix)
-
-        valid_exclude_ls = train_args.valid_exclude_ls or []
-        valid_dataset_dict = dict()
-        valid_name_ls = valid_dataset["dataset_name"]
-        if train_args.split_valid:
-            for dataset_name in set(valid_name_ls):
-                part_idx = [idx for idx, x in enumerate(valid_name_ls) if x == dataset_name]
-                part_dataset = valid_dataset.select(part_idx, keep_in_memory=False)
-
-                # 'jp1924/KconfSpeech-validation'
-                start = dataset_name.rindex("/") + 1
-                end = dataset_name.rindex("-")
-
-                if dataset_name[start:end] in valid_exclude_ls:
-                    continue
-
-                if len(part_dataset) > train_args.valid_truncate_num:
-                    part_dataset = part_dataset.shuffle(train_args.seed)
-                    part_dataset = part_dataset.select(range(train_args.valid_truncate_num))
-
-                if (train_args.local_rank == 0) and valid_dataset:
-                    valid_total_length = sum(part_dataset[train_args.length_column_name])
-                    logger.info(f"{dataset_name[start:end]}-valid_dataset")
-                    logger.info(part_dataset)
-                    logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
-                valid_dataset_dict[dataset_name[start:end]] = part_dataset
-            valid_dataset = valid_dataset_dict
-        else:
-            if (train_args.local_rank == 0) and valid_dataset:
-                valid_total_length = sum(valid_dataset[train_args.length_column_name])
-                logger.info("valid_dataset")
-                logger.info(valid_dataset)
-                logger.info(f"valid_total_hour: {(valid_total_length / 16000) / 60**2:.2f}h")
-
-    test_dataset = None
-    if train_args.do_predict:
-        test_dataset = collect_dataset(train_args.test_dataset_prefix)
-        if (train_args.local_rank == 0) and test_dataset:
-            test_total_length = sum(test_dataset[train_args.length_column_name])
-            logger.info("test_dataset")
-            logger.info(test_dataset)
-            logger.info(f"test_total_hour: {(test_total_length / 16000) / 60**2:.2f}h")
-
-    # set collator
-    collator = DataCollatorCTCWithPadding(
-        processor=processor,
-        pad_to_multiple_of=train_args.pad_to_multiple_of,
-    )
-
-    wer_metric = load("wer")
-    cer_metric = load("cer")
+    main_input_name = model.main_input_name
 
     if train_args.torch_compile:
         model = torch.compile(
@@ -302,6 +182,17 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
             mode=train_args.torch_compile_mode,
             fullgraph=True,
         )
+
+    # load dataset & preprocess
+    train_dataset, valid_dataset, test_dataset = prepare_datasets()
+
+    # set collator
+    collator = DataCollatorCTCWithPadding(
+        processor=processor,
+        pad_to_multiple_of=train_args.pad_to_multiple_of,
+    )
+
+    wer_metric, cer_metric = load("wer"), load("cer")
 
     # set trainer
     trainer = Trainer(
@@ -314,7 +205,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         compute_metrics=compute_metrics,
     )
     if train_args.do_train and train_dataset:
-        train(trainer)
+        train(trainer, train_args)
 
     if train_args.do_eval and valid_dataset:
         valid(trainer)
@@ -323,8 +214,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         predict(trainer, test_dataset)
 
 
-def train(trainer: Trainer) -> None:
-    train_args: Wav2Vec2FinetuningArguments = trainer.args
+def train(trainer: Trainer, train_args: Wav2Vec2FinetuningArguments) -> None:
     trainer.train(resume_from_checkpoint=train_args.resume_from_checkpoint)
 
     save_dir = os.path.join(train_args.output_dir, "last_model")
@@ -351,15 +241,16 @@ def predict(trainer: Trainer, test_dataset: Optional[Union[Dataset, Dict[str, Da
         end = dataset_name.rindex("-")
 
         outputs = trainer.predict(part_dataset, metric_key_prefix=f"test/{dataset_name[start:]}")
-        # NOTE: trainer.log를 사용하면 train/test 처럼 찍혀서 나와서 wandb로 직접 찍음
-        if GLOBAL_LOGGER:
-            GLOBAL_LOGGER.log(outputs.metrics)
+
         test_dataset_dict[dataset_name[start:end]] = part_dataset
 
 
 if __name__ == "__main__":
     parser = HfArgumentParser([Wav2Vec2FinetuningArguments])
-    train_args, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
+    train_args, remain_args = parser.parse_args_into_dataclasses(return_remaining_strings=True)
+
+    if remain_args and is_main_process(train_args.local_rank):
+        logger.info(f"remain_args: {remain_args}")
 
     if train_args.seed is not None:
         set_seed(train_args.seed)
@@ -367,20 +258,4 @@ if __name__ == "__main__":
     if train_args.run_name is not None:
         setproctitle(train_args.run_name)
 
-    check_wandb = ("wandb" in train_args.report_to) and (train_args.local_rank == 0)
-    if is_wandb_available() and check_wandb:
-        import wandb
-
-        wandb.init(
-            project=os.getenv("WANDB_PROJECT"),
-            entity=os.getenv("WANDB_ENTITY"),
-            group=os.getenv("WANDB_RUN_GROUP"),
-            name=train_args.run_name,
-            save_code=True,
-        )
-        GLOBAL_LOGGER = wandb
-
     main(train_args)
-
-    if GLOBAL_LOGGER:
-        GLOBAL_LOGGER.finish()
