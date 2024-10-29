@@ -120,6 +120,7 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
                 logger.info(f"{repo_name}-load time: {time.time() - start_time}")
 
             for dataset_key in datasets:
+                dataset = None
                 if dataset_key in train_args.train_dataset_prefix and train_args.do_train:
                     dataset = datasets[dataset_key]
                     train_dataset_ls.append(dataset)
@@ -132,7 +133,7 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
                     dataset = datasets[dataset_key]
                     test_dataset_ls.append(dataset)
 
-                if is_main_process(train_args.local_rank):
+                if dataset and is_main_process(train_args.local_rank):
                     length_ls = sorted(dataset[train_args.length_column_name], reverse=True)
                     logger.info(f"{repo_name}/{dataset_key}-length: {length_ls[:100]}")
                     logger.info(
