@@ -72,7 +72,11 @@ class Wav2Vec2FinetuningArguments(TrainingArguments):
 
     data_truncate_map: Optional[Union[dict, str]] = field(
         default=None,
-        metadata={"help": "A map to truncate part of the data. {‘repo_name’: {‘train’: 3000, ‘validation’: 1500}}."},
+        metadata={"help": "A map to truncate part of the data. {'repo_name': {'train': 3000, 'validation': 1500}}."},
+    )
+    data_name_map: Optional[Union[dict, str]] = field(
+        default=None,
+        metadata={"help": "A map to config_name of the data. {'repo_name': 'data_config_name'"},
     )
 
     cache_file_name: str = field(
@@ -99,9 +103,10 @@ class Wav2Vec2FinetuningArguments(TrainingArguments):
 
     attn_implementation: str = field(
         default="eager",
-        metadata={"help": ""},
+        metadata={
+            "help": "어떤 attention 연산 방식을 사용할지 결정하는 값, default가 eager임, eager, flash_attention_2, sdpa중 하나 고르셈."
+        },
     )
-
     sampling_rate: int = field(
         default=16000,
         metadata={"help": ""},

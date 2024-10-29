@@ -1,5 +1,6 @@
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Union
 
 from transformers import TrainingArguments
@@ -52,7 +53,11 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
     )
     data_truncate_map: Optional[Union[dict, str]] = field(
         default=None,
-        metadata={"help": "A map to truncate part of the data. {‘repo_name’: {‘train’: 3000, ‘validation’: 1500}}."},
+        metadata={"help": "A map to truncate part of the data. {'repo_name': {'train': 3000, 'validation': 1500}}."},
+    )
+    data_name_map: Optional[Union[dict, str]] = field(
+        default=None,
+        metadata={"help": "A map to config_name of the data. {'repo_name': 'data_config_name'"},
     )
 
     cache_file_name: str = field(
@@ -114,8 +119,11 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
 
     def __post_init__(self):
         super().__post_init__()
-        self.data_truncate_map = json.loads(self.data_truncate_map) if self.data_truncate_map else None
+        self.data_truncate_map = json.loads(self.data_truncate_map) if self.data_truncate_map else {}
+        self.data_name_map = json.loads(self.data_name_map) if self.data_name_map else {}
 
         self.train_dataset_prefix = self.train_dataset_prefix if self.train_dataset_prefix else []
         self.valid_dataset_prefix = self.valid_dataset_prefix if self.valid_dataset_prefix else []
         self.test_dataset_prefix = self.test_dataset_prefix if self.test_dataset_prefix else []
+
+        self.cache_dir = Path(self.cache_dir) if self.cache_dir else None
