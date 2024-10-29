@@ -2,14 +2,11 @@
     "bf16": {
         "enabled": "auto"
     },
-    "fp16": {
-        "enabled": "auto"
-    },
     "zero_optimization": {
         "stage": 2,
         "allgather_partitions": true,
         "allgather_bucket_size": 5e7,
-        "overlap_comm": false,
+        "overlap_comm": true,
         "reduce_scatter": true,
         "reduce_bucket_size": 5e7,
         "contiguous_gradients": true,
@@ -28,7 +25,7 @@
         "partition_activations": true,
         "cpu_checkpointing": true,
         "contiguous_memory_optimization": true,
-        "number_checkpoints": null,
+        "number_checkpoints": 10,
         "synchronize_checkpoint_boundary": false,
         "profile": false
     }
