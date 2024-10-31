@@ -27,11 +27,11 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
     )
 
     min_duration_in_seconds: float = field(
-        default=8000.0,
+        default=400,
         metadata={"help": "Filter out audio files that are longer than `min_duration_in_seconds` seconds"},
     )
     max_duration_in_seconds: float = field(
-        default=448512.0,
+        default=160000,
         metadata={"help": "Filter out audio files that are shorter than `max_duration_in_seconds` seconds"},
     )
 

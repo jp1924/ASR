@@ -6,7 +6,7 @@ import torch
 from data import DataCollatorForWav2Vec2Pretraining
 from datasets import Dataset, concatenate_datasets, load_dataset
 from setproctitle import setproctitle
-from utils import Wav2Vec2PretrainingArguments, librosa_silence_filter
+from utils import Wav2Vec2PretrainingArguments, get_feat_extract_output_lengths, librosa_silence_filter
 from wav2vec2_pretrainer import Wav2Vec2Pretrainer
 
 from transformers import (
@@ -85,7 +85,7 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
                 preprocessor,
                 num_proc=train_args.preprocessing_num_workers,
                 load_from_cache_file=True,
-                batched=train_args.preprocessing_batched,
+                batched=True,
                 cache_file_names=map_cache_file_name,
                 batch_size=train_args.preprocessing_batch_size,
                 remove_columns=set(sum(datasets.column_names.values(), [])),
@@ -97,7 +97,7 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
                 num_proc=train_args.preprocessing_num_workers,
                 input_columns=[train_args.length_column_name],
                 cache_file_names=filter_cache_file_name,
-                batched=train_args.preprocessing_batched,
+                batched=True,
                 batch_size=train_args.preprocessing_batch_size,
                 desc=f"length-filtering-{repo_name}",
             )
