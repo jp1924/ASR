@@ -21,10 +21,6 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         default=1000,
         metadata={"help": "The number of processes to use for the preprocessing."},
     )
-    preprocessing_batched: bool = field(
-        default=True,
-        metadata={"help": "The number of processes to use for the preprocessing."},
-    )
     audio_column_name: str = field(
         default="audio",
         metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'audio'"},
