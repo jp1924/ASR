@@ -112,6 +112,18 @@ class Wav2Vec2PretrainingArguments(TrainingArguments):
         default=16000,
         metadata={"help": ""},
     )
+    packing_max_seq_len: int = field(
+        default=512,
+        metadata={"help": ""},
+    )
+    packing_max_elem: int = field(
+        default=10,
+        metadata={"help": ""},
+    )
+    do_packing: bool = field(
+        default=False,
+        metadata={"help": ""},
+    )
 
     def __post_init__(self):
         super().__post_init__()

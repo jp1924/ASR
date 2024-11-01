@@ -2,6 +2,7 @@ from transformers.utils import SAFE_WEIGHTS_NAME
 
 from .finetuning_args import Wav2Vec2FinetuningArguments
 from .optimization import get_tri_stage_schedule_with_warmup_lr_lambda, set_scheduler
+from .packing import get_packing_dataset_idx, get_packing_strategies
 from .preprocessor import (
     centi_meter_regex,
     double_space_regex,

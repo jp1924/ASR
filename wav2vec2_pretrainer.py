@@ -22,10 +22,16 @@ from transformers.trainer_utils import (
     denumpify_detensorize,
     has_length,
 )
+from transformers.training_args import OptimizerNames
 from transformers.utils import (
     is_apex_available,
     is_sagemaker_mp_enabled,
+    is_torch_mlu_available,
+    is_torch_mps_available,
+    is_torch_musa_available,
+    is_torch_npu_available,
     is_torch_xla_available,
+    is_torch_xpu_available,
     logging,
 )
 
@@ -65,8 +71,11 @@ class Wav2Vec2Pretrainer(Trainer):
     percent_masked = 0
     num_losses = 0
 
-    def training_step(self, model: Module, inputs: Dict[str, Tensor | Any]) -> Tensor:
+    def training_step(self, model: Module, inputs: Dict[str, Tensor | Any], num_items_in_batch=None) -> Tensor:
         model.train()
+        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+            self.optimizer.train()
+
         inputs = self._prepare_inputs(inputs)
 
         sub_attention_mask = inputs.pop("sub_attention_mask", None)
@@ -85,6 +94,30 @@ class Wav2Vec2Pretrainer(Trainer):
         with self.compute_loss_context_manager():
             loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
 
+        del inputs
+        if (
+            self.args.torch_empty_cache_steps is not None
+            and self.state.global_step % self.args.torch_empty_cache_steps == 0
+        ):
+            if is_torch_xpu_available():
+                torch.xpu.empty_cache()
+            elif is_torch_mlu_available():
+                torch.mlu.empty_cache()
+            elif is_torch_musa_available():
+                torch.musa.empty_cache()
+            elif is_torch_npu_available():
+                torch.npu.empty_cache()
+            elif is_torch_mps_available(min_version="2.0"):
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
+
+        kwargs = {}
+
+        # For LOMO optimizers you need to explicitly use the learnign rate
+        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+            kwargs["learning_rate"] = self._get_learning_rate()
+
         if self.args.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
@@ -92,6 +125,7 @@ class Wav2Vec2Pretrainer(Trainer):
             with amp.scale_loss(loss, self.optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
+            loss *= self.args.gradient_accumulation_steps
             # NOTE: accelerate에서 gradient accumulation을 자동으로 계산 해줌. 어떻게 하는지는 모르지만....
             self.accelerator.backward(loss)
 
@@ -113,7 +147,6 @@ class Wav2Vec2Pretrainer(Trainer):
             model.set_gumbel_temperature(self.gumbel_temperature)
 
         # TODO: 다른 loss에도 gradient accumulation이 적용이 되었는지는 모르겠음. 이건 확인 필요.
-        loss = loss.detach()
 
         # for logging
         self.contrastive_loss += outputs.contrastive_loss.detach() / self.args.gradient_accumulation_steps
@@ -126,7 +159,7 @@ class Wav2Vec2Pretrainer(Trainer):
         # 사실상 return하는 loss는 사용하지 않음
         # inner_training_loop는 수정하기에는 리스크가 너무 큼.
         # 최소한의 코드 수정을 요하기 위해 이런 방식을 사용함.
-        return loss / self.args.gradient_accumulation_steps
+        return loss.detach() / self.args.gradient_accumulation_steps
 
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval):
         if self.control.should_log and self.state.global_step > self._globalstep_last_logged:

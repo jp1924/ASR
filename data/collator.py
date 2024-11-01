@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
+from typing import Optional, Union
 
+import numpy as np
 import torch
 
 from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForPreTraining, Wav2Vec2Processor
@@ -9,6 +10,63 @@ from transformers.models.wav2vec2.modeling_wav2vec2 import (
     _compute_mask_indices,
     _sample_negative_indices,
 )
+
+
+@dataclass
+class PackingCollator(DataCollatorMixin):
+    pack_max_seq: int = 512
+    mask_time_prob: float = 0.65
+    mask_time_length: int = 10
+    mask_time_min_masks: int = 0
+    num_negatives: int = 100
+    return_tensors: str = "pt"
+
+    def torch_call(self, features):
+        input_values_ls = list()
+        feat_attention_mask_ls = list()
+        split_indices_ls = list()
+        feat_split_indices_ls = list()
+        mask_time_indices_ls = list()
+        sampled_negative_indices_ls = list()
+
+        for feature in features:
+            input_values_ls.append(feature["input_values"])
+
+            start_idx = 0
+            expand_attention_mask = np.zeros((1, 1, self.pack_max_seq, self.pack_max_seq))
+            mask_time_indices = np.zeros((1, self.pack_max_seq))
+            sampled_negative_indices = np.zeros((1, self.pack_max_seq, self.num_negatives))
+            for feat_len in feature["feat_split_idx"]:
+                end_idx = start_idx + feat_len
+                mask_time_indices[0, start_idx:end_idx] = _compute_mask_indices(
+                    (1, int(feat_len)),
+                    self.mask_time_prob,
+                    self.mask_time_length,
+                    min_masks=self.mask_time_min_masks,
+                )
+                sampled_negative_indices[0, start_idx:end_idx, :] = _sample_negative_indices(
+                    (1, int(feat_len)),
+                    self.num_negatives,
+                    mask_time_indices=mask_time_indices[:, start_idx:end_idx].astype(bool),
+                )
+                expand_attention_mask[0, 0, start_idx:end_idx, start_idx:end_idx] = 1
+                start_idx += int(feat_len)
+
+            feat_attention_mask_ls.append(expand_attention_mask)
+            feat_split_indices_ls.append(feature["feat_split_idx"])
+            split_indices_ls.append(feature["split_idx"])
+            mask_time_indices_ls.append(mask_time_indices)
+            sampled_negative_indices_ls.append(sampled_negative_indices)
+
+        batch = dict()
+        batch["input_values"] = input_values_ls
+        batch["feat_attention_mask"] = torch.tensor(np.concatenate(feat_attention_mask_ls))
+        batch["split_idx"] = split_indices_ls
+        batch["feat_split_idx"] = feat_split_indices_ls
+        batch["mask_time_indices"] = torch.tensor(np.concatenate(mask_time_indices_ls))
+        batch["sampled_negative_indices"] = torch.tensor(np.concatenate(sampled_negative_indices_ls))
+
+        return batch
 
 
 @dataclass
@@ -51,16 +109,16 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
     model: Wav2Vec2ForPreTraining
     feature_extractor: Wav2Vec2FeatureExtractor
     padding: Union[bool, str] = "longest"
-    return_tensors: str = "pt"
     pad_to_multiple_of: Optional[int] = None
     mask_time_prob: Optional[float] = 0.65
     mask_time_length: Optional[int] = 10
     mask_time_min_masks: int = 0
+    num_negatives: int = 100
+    return_tensors: str = "pt"
 
-    def torch_call(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
+    def torch_call(self, features):
         # features가 2차원 리스트로 들어올 떄 feature_extractor에서 padding을 진행하지 못함. 따라서 이걸 1차원 리스트로 변경 함.
-        if len(features[0]["input_values"].shape) == 2:
-            features = [{"input_values": x["input_values"][0]} for x in features]
+        features = [{"input_values": x["input_values"]} for x in features]
 
         # reformat list to dict and set to pytorch format
         batch = self.feature_extractor.pad(
@@ -71,42 +129,40 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
             return_tensors=self.return_tensors,
         )
 
-        device = batch["input_values"].device
-        batch_size = batch["input_values"].shape[0]
-
-        mask_indices_seq_length = self.model._get_feat_extract_output_lengths(batch["input_values"].shape[-1])
-        # make sure masked sequence length is a Python scalar
-        mask_indices_seq_length = int(mask_indices_seq_length)
+        device = batch.input_values.device
+        batch_size, sample_size = batch.input_values.shape
+        mask_indices_seq_length = self.model._get_feat_extract_output_lengths(sample_size).item()
 
         # make sure that no loss is computed on padded inputs
         # evaluate에선 sub_attention_mask 사용을 안함. 그리고 없애는 처리도 하지 않기 때문에 애러가 발생함.
-        if batch.get("attention_mask") is not None and self.model.training:
+        if hasattr(batch, "attention_mask") is not None and self.model.training:
             # compute real output lengths according to convolution formula
             batch["sub_attention_mask"] = self.model._get_feature_vector_attention_mask(
-                mask_indices_seq_length, batch["attention_mask"]
+                mask_indices_seq_length,
+                batch.attention_mask,
             )
 
         features_shape = (batch_size, mask_indices_seq_length)
 
         # sample randomly masked indices
         mask_time_indices = _compute_mask_indices(
-            features_shape,
-            self.mask_time_prob,
-            self.mask_time_length,
+            shape=features_shape,
+            mask_prob=self.mask_time_prob,
+            mask_length=self.mask_time_length,
             attention_mask=batch.get("sub_attention_mask"),
             min_masks=self.mask_time_min_masks,
         )
 
-        if not (mask_time_indices.sum(-1) - 1).all():
-            breakpoint()
         # sample negative indices
         sampled_negative_indices = _sample_negative_indices(
-            features_shape,
-            self.model.config.num_negatives,
+            features_shape=features_shape,
+            num_negatives=self.num_negatives,
             mask_time_indices=mask_time_indices,
         )
         batch["mask_time_indices"] = torch.tensor(mask_time_indices, dtype=torch.long, device=device)
         batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices, dtype=torch.long, device=device)
+
+        batch = batch.to(self.model.dtype)
 
         return batch
 
@@ -115,36 +171,25 @@ class DataCollatorForWav2Vec2Pretraining(DataCollatorMixin):
 class DataCollatorCTCWithPadding(DataCollatorMixin):
     processor: Wav2Vec2Processor
     padding: Union[bool, str] = "longest"
-    return_tensors: str = "pt"
     pad_to_multiple_of: Optional[int] = None
     pad_to_multiple_of_labels: Optional[int] = None
-    feature_extractor_input_name: Optional[str] = "input_values"
+    return_tensors: str = "pt"
 
-    def torch_call(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
-        input_features = [
-            {self.feature_extractor_input_name: feature[self.feature_extractor_input_name][0]} for feature in features
-        ]
+    def torch_call(self, features):
+        input_features = [{"input_values": feature["input_values"]} for feature in features]
         label_features = [{"input_ids": feature["labels"]} for feature in features]
 
         batch = self.processor.pad(
             input_features=input_features,
-            padding=self.padding,
-            pad_to_multiple_of=self.pad_to_multiple_of,
-            return_tensors="pt",
-        )
-
-        labels_batch = self.processor.pad(
             labels=label_features,
             padding=self.padding,
-            pad_to_multiple_of=self.pad_to_multiple_of_labels,
-            return_tensors="pt",
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors=self.return_tensors,
         )
 
         # replace padding with -100 to ignore loss correctly
-        labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
-
-        batch["labels"] = labels
-        if "attention_mask" in batch:
-            batch["attention_mask"] = batch["attention_mask"].to(torch.long)
+        batch["labels"] = batch.input_ids.masked_fill(batch.attention_mask.ne(1), -100)
+        if hasattr(batch, "attention_mask"):
+            batch["attention_mask"] = batch.attention_mask.to(torch.long)
 
         return batch

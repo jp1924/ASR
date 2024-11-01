@@ -15,7 +15,7 @@ RUN apt-get update && \
 RUN ln -s /usr/bin/python3.10 /usr/bin/python
 
 RUN pip install -U pip wheel setuptools && \
-    pip install --no-cache-dir git+https://github.com/huggingface/transformers.git@78b2929c0554b79e0489b451ce4ece14d265ead2 && \
+    pip install transformers==4.46.1 && \
     pip install accelerate==0.33.0 datasets==2.21.0 evaluate==0.4.2 peft==0.12.0 deepspeed==0.15.0 fire==0.7.0 && \
     pip install kss==6.0.4 bitsandbytes==0.43.3 scipy==1.14.1 sentencepiece==0.2.0 librosa==0.10.2 jiwer==3.0.4 soundfile==0.12.1 torch-audiomentations==0.11.1 && \
     pip install ruff natsort setproctitle glances[gpu] wandb comet-ml cmake

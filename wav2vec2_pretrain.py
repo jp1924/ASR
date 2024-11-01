@@ -1,12 +1,19 @@
 import os
 import time
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
-from data import DataCollatorForWav2Vec2Pretraining
-from datasets import Dataset, concatenate_datasets, load_dataset
+from data import DataCollatorForWav2Vec2Pretraining, PackingCollator
+from datasets import Dataset, concatenate_datasets, load_dataset, load_from_disk
+from models import PackedWav2Vec2ForPreTraining
 from setproctitle import setproctitle
-from utils import Wav2Vec2PretrainingArguments, get_feat_extract_output_lengths, librosa_silence_filter
+from utils import (
+    Wav2Vec2PretrainingArguments,
+    get_feat_extract_output_lengths,
+    get_packing_dataset_idx,
+    get_packing_strategies,
+    librosa_silence_filter,
+)
 from wav2vec2_pretrainer import Wav2Vec2Pretrainer
 
 from transformers import (
@@ -51,6 +58,76 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
         return [
             train_args.min_duration_in_seconds <= length <= train_args.max_duration_in_seconds for length in length_ls
         ]
+
+    def packing_datasets(dataset: Dataset, split: str) -> Dataset:
+        def get_pack_length(length_ls):
+            return {"pack_length": [get_feat_extract_output_lengths(length, config) for length in length_ls]}
+
+        def packing_data_sample(packing_ls: List[List[int]], feat_length_ls: List[int], dataset: Dataset):
+            finish_pack_audio_ls, finish_split_idx_ls, finish_length_ls, finish_feat_split_idx_ls = (
+                list(),
+                list(),
+                list(),
+                list(),
+            )
+            for pack, feat in zip(packing_ls, feat_length_ls):
+                sampled_pack = dataset.select(pack)
+                pack_audio = sampled_pack["input_values"]
+                pack_length = sampled_pack["length"]
+
+                finish_pack_audio_ls.append(pack_audio)
+                finish_split_idx_ls.append(pack_length)
+                finish_feat_split_idx_ls.append(feat)
+                finish_length_ls.append(sum(pack_length))
+
+            return {
+                "input_values": finish_pack_audio_ls,
+                "split_idx": finish_split_idx_ls,
+                "length": finish_length_ls,
+                "feat_split_idx": finish_feat_split_idx_ls,
+            }
+
+        cache_name = "_".join(sorted(x.split("/")[1] for x in train_args.dataset_repo_ls))
+        cache_path = train_args.cache_dir.joinpath(f"{cache_name}-packing_idx_cache")
+
+        cache_file_path = train_args.cache_dir.joinpath(f"packing_{cache_name}-{split}_{train_args.cache_file_name}")
+
+        with train_args.main_process_first("packing"):
+            if not cache_path.exists():
+                pack_length_dataset = dataset.map(
+                    get_pack_length,
+                    num_proc=train_args.preprocessing_num_workers,
+                    batch_size=train_args.preprocessing_batch_size,
+                    keep_in_memory=True,
+                    batched=True,
+                    remove_columns="length",
+                    input_columns="length",
+                )
+
+                length_ls = pack_length_dataset["pack_length"]
+                strategies_per_length = get_packing_strategies(
+                    length_ls,
+                    train_args.packing_max_seq_len,
+                    train_args.packing_max_elem,
+                )
+                packing_idx_dataset = get_packing_dataset_idx(length_ls, strategies_per_length)
+                packing_idx_dataset.save_to_disk(cache_path.as_posix())
+            else:
+                packing_idx_dataset = load_from_disk(cache_path.as_posix())
+
+        packing_dataset = packing_idx_dataset.map(
+            packing_data_sample,
+            num_proc=train_args.preprocessing_num_workers,
+            batch_size=train_args.preprocessing_batch_size,
+            load_from_cache_file=True,
+            batched=True,
+            cache_file_name=cache_file_path.as_posix(),
+            remove_columns=["packing_ls", "feat_length_ls"],
+            input_columns=["packing_ls", "feat_length_ls"],
+            fn_kwargs={"dataset": dataset},
+        )
+
+        return packing_dataset
 
     def prepare_datasets() -> Tuple[Optional[Dataset], Optional[Dataset], Optional[Dataset]]:
         train_dataset_ls, valid_dataset_ls, test_dataset_ls = list(), list(), list()
@@ -143,6 +220,8 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
         train_dataset = None
         if train_dataset_ls:
             train_dataset = concatenate_datasets(train_dataset_ls)
+            if train_args.do_packing:
+                train_dataset = packing_datasets(train_dataset, "train")
             train_dataset.set_format("pt")
             if is_main_process(train_args.local_rank):
                 logger.info(f"train_dataset:\n{train_dataset}")
@@ -150,6 +229,8 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
         valid_dataset = None
         if valid_dataset_ls:
             valid_dataset = concatenate_datasets(valid_dataset_ls)
+            if train_args.do_packing:
+                valid_dataset = packing_datasets(valid_dataset, "valid")
             valid_dataset.set_format("pt")
             if is_main_process(train_args.local_rank):
                 logger.info(f"valid_dataset:\n{valid_dataset}")
@@ -157,10 +238,11 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
         test_dataset = None
         if test_dataset_ls:
             test_dataset = concatenate_datasets(test_dataset_ls)
+            if train_args.do_packing:
+                test_dataset = packing_datasets(test_dataset, "test")
             test_dataset.set_format("pt")
             if is_main_process(train_args.local_rank):
                 logger.info(f"test_dataset:\n{test_dataset}")
-
         return (train_dataset, valid_dataset, test_dataset)
 
     model_name_or_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
@@ -168,8 +250,15 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
         model_name_or_path,
         attn_implementation=train_args.attn_implementation,
     )
-    model = Wav2Vec2ForPreTraining.from_pretrained(model_name_or_path, config=config)
+
+    if train_args.do_packing:
+        model = PackedWav2Vec2ForPreTraining.from_pretrained(model_name_or_path, config=config)
+    else:
+        model = Wav2Vec2ForPreTraining.from_pretrained(model_name_or_path, config=config)
     processor = Wav2Vec2Processor.from_pretrained(model_name_or_path)
+
+    if config._attn_implementation == "flash_attention_2" and train_args.do_packing:
+        raise ValueError("packing 알고리즘은 flash_attention_2가 지원되지 않음. ㅇㅇ")
 
     if train_args.torch_compile:
         model = torch.compile(
@@ -183,14 +272,24 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
     train_dataset, valid_dataset, test_dataset = prepare_datasets()
 
     # set collator
-    collator = DataCollatorForWav2Vec2Pretraining(
-        model=model,
-        feature_extractor=processor.feature_extractor,
-        pad_to_multiple_of=train_args.pad_to_multiple_of,
-        mask_time_prob=config.mask_time_prob,
-        mask_time_length=config.mask_time_length,
-        mask_time_min_masks=config.mask_time_min_masks,
-    )
+    if train_args.do_packing:
+        collator = PackingCollator(
+            pack_max_seq=train_args.packing_max_seq_len,
+            mask_time_prob=config.mask_time_prob,
+            mask_time_length=config.mask_time_length,
+            mask_time_min_masks=config.mask_time_min_masks,
+            num_negatives=config.num_negatives,
+        )
+    else:
+        collator = DataCollatorForWav2Vec2Pretraining(
+            model=model,
+            feature_extractor=processor.feature_extractor,
+            pad_to_multiple_of=train_args.pad_to_multiple_of,
+            mask_time_prob=config.mask_time_prob,
+            mask_time_length=config.mask_time_length,
+            mask_time_min_masks=config.mask_time_min_masks,
+            num_negatives=config.num_negatives,
+        )
 
     # set trainer
     trainer = Wav2Vec2Pretrainer(
