@@ -2,6 +2,9 @@
     "bf16": {
         "enabled": "auto"
     },
+    "fp16": {
+        "enabled": "auto"
+    },
     "zero_optimization": {
         "stage": 3,
         "allgather_partitions": true,

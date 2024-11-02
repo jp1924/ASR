@@ -2,6 +2,9 @@
     "bf16": {
         "enabled": "auto"
     },
+    "fp16": {
+        "enabled": "auto"
+    },
     "zero_optimization": {
         "stage": 2,
         "allgather_partitions": true,
@@ -21,6 +24,7 @@
     "train_batch_size": "auto",
     "train_micro_batch_size_per_gpu": "auto",
     "wall_clock_breakdown": false,
+    "zero_allow_untested_optimizer": true,
     "activation_checkpointing": {
         "partition_activations": true,
         "cpu_checkpointing": true,
