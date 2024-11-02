@@ -38,17 +38,18 @@ class PackingCollator(DataCollatorMixin):
             sampled_negative_indices = np.zeros((1, self.pack_max_seq, self.num_negatives))
             for feat_len in feature["feat_split_idx"]:
                 end_idx = start_idx + feat_len
-                mask_time_indices[0, start_idx:end_idx] = _compute_mask_indices(
+                test = _compute_mask_indices(
                     (1, int(feat_len)),
                     self.mask_time_prob,
                     self.mask_time_length,
                     min_masks=self.mask_time_min_masks,
                 )
-                sampled_negative_indices[0, start_idx:end_idx, :] = _sample_negative_indices(
-                    (1, int(feat_len)),
-                    self.num_negatives,
-                    mask_time_indices=mask_time_indices[:, start_idx:end_idx].astype(bool),
-                )
+                mask_time_indices[0, start_idx:end_idx] = test
+                # sampled_negative_indices[0, start_idx:end_idx, :] = _sample_negative_indices(
+                #     (1, int(feat_len)),
+                #     self.num_negatives,
+                #     mask_time_indices=test.astype(bool),
+                # )
                 expand_attention_mask[0, 0, start_idx:end_idx, start_idx:end_idx] = 1
                 start_idx += int(feat_len)
 
@@ -56,15 +57,21 @@ class PackingCollator(DataCollatorMixin):
             feat_split_indices_ls.append(feature["feat_split_idx"])
             split_indices_ls.append(feature["split_idx"])
             mask_time_indices_ls.append(mask_time_indices)
-            sampled_negative_indices_ls.append(sampled_negative_indices)
+            # sampled_negative_indices_ls.append(sampled_negative_indices)
+        mask_time_indices = np.concatenate(mask_time_indices_ls)
+        sampled_negative_indices_ls = _sample_negative_indices(
+            mask_time_indices.shape,
+            self.num_negatives,
+            mask_time_indices=mask_time_indices.astype(bool),
+        )
 
         batch = dict()
         batch["input_values"] = input_values_ls
         batch["feat_attention_mask"] = torch.tensor(np.concatenate(feat_attention_mask_ls))
         batch["split_idx"] = split_indices_ls
         batch["feat_split_idx"] = feat_split_indices_ls
-        batch["mask_time_indices"] = torch.tensor(np.concatenate(mask_time_indices_ls))
-        batch["sampled_negative_indices"] = torch.tensor(np.concatenate(sampled_negative_indices_ls))
+        batch["mask_time_indices"] = torch.tensor(mask_time_indices)
+        batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices_ls)
 
         return batch
 

@@ -151,6 +151,7 @@ class PackedWav2Vec2EncoderStableLayerNorm(nn.Module):
         hidden_states,
         feat_split_idx=None,
         attention_mask=None,
+        feat_attention_mask=None,
         output_attentions=False,
         output_hidden_states=False,
         return_dict=True,
@@ -172,41 +173,43 @@ class PackedWav2Vec2EncoderStableLayerNorm(nn.Module):
                 attention_mask = attention_mask.expand(
                     attention_mask.shape[0], 1, attention_mask.shape[-1], attention_mask.shape[-1]
                 )
-        elif attention_mask is not None and len(attention_mask.shape) == 4:
+        elif feat_attention_mask is not None and len(feat_attention_mask.shape) == 4:
             # make sure padded tokens output 0
             # attention_mask는 bool tensor로 되어 있도록 하자, 1 True, 0 False로
-            expand_attention_mask = (
-                torch.diagonal(attention_mask, dim1=2, dim2=3).transpose(2, 1).repeat(1, 1, hidden_states.shape[2])
-            )
-            hidden_states = hidden_states * expand_attention_mask.to(dtype=hidden_states.dtype)
+            # expand_attention_mask = (
+            #     torch.diagonal(attention_mask, dim1=2, dim2=3).transpose(2, 1).repeat(1, 1, hidden_states.shape[2])
+            # )
+            # hidden_states = hidden_states * expand_attention_mask.to(dtype=hidden_states.dtype)
             if self._use_flash_attention_2:
                 # 2d mask is passed through the layers
                 attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
             else:
                 # extend attention_mask
-                attention_mask = 1.0 - attention_mask
-                attention_mask = attention_mask * torch.finfo(hidden_states.dtype).min
+                feat_attention_mask = 1.0 - feat_attention_mask
+                feat_attention_mask = feat_attention_mask * torch.finfo(hidden_states.dtype).min
 
-        if feat_split_idx:
-            positional_hidden_states = torch.zeros(
-                hidden_states.shape,
-                device=hidden_states.device,
-                dtype=hidden_states.dtype,
-            )
-            for idx, (feat_split, hidden_state) in enumerate(zip(feat_split_idx, hidden_states)):
-                start_idx = 0
-                for split_idx in feat_split.tolist():
-                    end_idx = start_idx + split_idx
-                    sample = hidden_state[start_idx:end_idx][None]
-                    sample = self.dropout(sample + self.pos_conv_embed(sample))
+            attention_mask = feat_attention_mask
 
-                    positional_hidden_states[idx, start_idx:end_idx, :] = sample[0]
-                    start_idx += split_idx
-            hidden_state = positional_hidden_states
-        else:
-            position_embeddings = self.pos_conv_embed(hidden_states)
-            hidden_states = hidden_states + position_embeddings
-            hidden_states = self.dropout(hidden_states)
+        # if feat_split_idx:
+        #     positional_hidden_states = torch.zeros(
+        #         hidden_states.shape,
+        #         device=hidden_states.device,
+        #         dtype=hidden_states.dtype,
+        #     )
+        #     for idx, (feat_split, hidden_state) in enumerate(zip(feat_split_idx, hidden_states)):
+        #         start_idx = 0
+        #         for split_idx in feat_split.tolist():
+        #             end_idx = start_idx + split_idx
+        #             sample = hidden_state[start_idx:end_idx][None]
+        #             sample = self.dropout(sample + self.pos_conv_embed(sample))
+
+        #             positional_hidden_states[idx, start_idx:end_idx, :] = sample[0]
+        #             start_idx += split_idx
+        #     hidden_state = positional_hidden_states
+        # else:
+        #     position_embeddings = self.pos_conv_embed(hidden_states)
+        #     hidden_states = hidden_states + position_embeddings
+        #     hidden_states = self.dropout(hidden_states)
 
         synced_gpus = is_deepspeed_zero3_enabled() or is_fsdp_managed_module(self)
 
@@ -350,11 +353,13 @@ class PackedWav2Vec2Model(Wav2Vec2PreTrainedModel):
     )
     def forward(
         self,
-        input_values: Optional[torch.Tensor],
+        input_values: Optional[torch.Tensor] = None,
+        hidden_states=None,
+        extract_features=None,
         pack_extract_features: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         feat_split_idx: Optional[torch.Tensor] = None,
-        pack_attention_mask: Optional[torch.Tensor] = None,
+        feat_attention_mask: Optional[torch.Tensor] = None,
         mask_time_indices: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -366,31 +371,32 @@ class PackedWav2Vec2Model(Wav2Vec2PreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        if pack_extract_features is not None and pack_attention_mask is None:
-            raise ValueError("pack_extract_features는 있는데 attention_mask가 입력되지 않았음. 이거 입력하셈.")
+        # if pack_extract_features is not None and pack_attention_mask is None:
+        #     raise ValueError("pack_extract_features는 있는데 attention_mask가 입력되지 않았음. 이거 입력하셈.")
 
-        if pack_extract_features is None:
-            extract_features = self.feature_extractor(input_values)
-        else:
-            extract_features = pack_extract_features
+        # if pack_extract_features is None:
+        #     extract_features = self.feature_extractor(input_values)
+        # else:
+        #     extract_features = pack_extract_features
 
-        extract_features = extract_features.transpose(1, 2)
+        # extract_features = extract_features.transpose(1, 2)
 
-        if pack_attention_mask is not None:
-            attention_mask = pack_attention_mask
-        elif attention_mask is not None:
-            # compute reduced attention_mask corresponding to feature vectors
-            attention_mask = self._get_feature_vector_attention_mask(
-                extract_features.shape[1], attention_mask, add_adapter=False
-            )
+        # if pack_attention_mask is not None:
+        #     attention_mask = pack_attention_mask
+        # elif attention_mask is not None:
+        #     # compute reduced attention_mask corresponding to feature vectors
+        #     attention_mask = self._get_feature_vector_attention_mask(
+        #         extract_features.shape[1], attention_mask, add_adapter=False
+        #     )
 
-        hidden_states, extract_features = self.feature_projection(extract_features)
-        hidden_states = self._mask_hidden_states(
-            hidden_states, mask_time_indices=mask_time_indices, attention_mask=attention_mask
-        )
+        # hidden_states, extract_features = self.feature_projection(extract_features)
+        # hidden_states = self._mask_hidden_states(
+        #     hidden_states, mask_time_indices=mask_time_indices, attention_mask=attention_mask
+        # )
 
         encoder_outputs = self.encoder(
             hidden_states,
+            feat_attention_mask=feat_attention_mask,
             feat_split_idx=feat_split_idx,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
@@ -556,29 +562,50 @@ class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
         pack_extract_features = None
         if isinstance(input_values, list):
             extract_features_ls = list()
-            for batch in input_values:
+            hidden_states_ls = list()
+            for batch_idx, batch in enumerate(input_values):
                 start_idx = 0
                 extract_features = torch.zeros(
-                    (1, self.config.conv_dim[-1], max_seq_len), device=self.device, dtype=self.dtype
+                    (1, max_seq_len, self.config.conv_dim[-1]), device=self.device, dtype=self.dtype
+                )
+                hidden_states = torch.zeros(
+                    (1, max_seq_len, self.config.hidden_size), device=self.device, dtype=self.dtype
                 )
                 for input_value in batch:
                     input_value = input_value if len(input_value.shape) == 2 else input_value[None]
                     input_value = input_value.to(self.dtype).to(self.device)
                     extract_feature = self.wav2vec2.feature_extractor(input_value)
+                    extract_feature = extract_feature.transpose(1, 2)
+                    feat_len = extract_feature.shape[1]
 
-                    feat_len = extract_feature.shape[-1]
-                    extract_features[0, :, start_idx : start_idx + feat_len] = extract_feature
+                    hidden_state, extract_feature = self.wav2vec2.feature_projection(extract_feature)
+                    hidden_state = self.wav2vec2._mask_hidden_states(
+                        hidden_state,
+                        mask_time_indices=mask_time_indices[batch_idx, start_idx : start_idx + feat_len][None],
+                        attention_mask=torch.ones((1, feat_len), device=hidden_state.device, dtype=hidden_state.dtype),
+                    )
+
+                    position_embeddings = self.wav2vec2.encoder.pos_conv_embed(hidden_state)
+                    hidden_state = hidden_state + position_embeddings
+                    hidden_state = self.wav2vec2.encoder.dropout(hidden_state)
+
+                    hidden_states[0, start_idx : start_idx + feat_len, :] = hidden_state
+                    extract_features[0, start_idx : start_idx + feat_len, :] = extract_feature
                     start_idx += feat_len
 
                 extract_features_ls.append(extract_features)
+                hidden_states_ls.append(hidden_states)
             pack_extract_features = torch.concat(extract_features_ls)
+            pack_hidden_states = torch.concat(hidden_states_ls)
 
         outputs = self.wav2vec2(
             input_values,
+            hidden_states=pack_hidden_states,
+            extract_features=pack_extract_features,
             attention_mask=attention_mask,
             pack_extract_features=pack_extract_features,
             feat_split_idx=feat_split_idx,
-            pack_attention_mask=feat_attention_mask,
+            feat_attention_mask=feat_attention_mask,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             mask_time_indices=mask_time_indices,
@@ -596,142 +623,167 @@ class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
             attention_mask = self._get_feature_vector_attention_mask(
                 extract_features.shape[1], attention_mask, add_adapter=False
             )
+        quantized_features = torch.zeros(
+            (extract_features.shape[0], max_seq_len, self.config.codevector_dim),
+            device=self.device,
+            dtype=self.dtype,
+        )
+        codevector_perplexity = torch.tensor(0, device=self.device, dtype=self.dtype)
+        for batch_idx, feat_idx_ls in enumerate(feat_split_idx):
+            start_idx = 0
+
+            for feat_idx in feat_idx_ls:
+                feat_idx = int(feat_idx)
+                end_idx = start_idx + feat_idx
+
+                quantized_features[batch_idx, start_idx:end_idx], perplexity = self.quantizer(
+                    extract_features[batch_idx, start_idx:end_idx][None],
+                    mask_time_indices=mask_time_indices[batch_idx, start_idx:end_idx][None],
+                )
+                codevector_perplexity += perplexity
+                start_idx += feat_idx
+
+        codevector_perplexity = codevector_perplexity / extract_features.shape[0]
+
+        ########################################################################################
+        ########################################################################################
+        ########################################################################################
 
         # quantized_features, codevector_perplexity = self.quantizer(
         #     extract_features, mask_time_indices=mask_time_indices
         # )
 
-        # quantized_features = quantized_features.to(self.project_q.weight.dtype)
-        # quantized_features = self.project_q(quantized_features)
+        quantized_features = quantized_features.to(self.project_q.weight.dtype)
+        quantized_features = self.project_q(quantized_features)
 
-        # loss = contrastive_loss = diversity_loss = None
-        # if sampled_negative_indices is not None:
-        #     batch_size, sequence_length, hidden_size = quantized_features.shape
+        loss = contrastive_loss = diversity_loss = None
+        if sampled_negative_indices is not None:
+            batch_size, sequence_length, hidden_size = quantized_features.shape
 
-        #     # for training, we sample negatives
-        #     # 3. sample K negatives (distractors) quantized states for contrastive loss
-        #     # if attention_mask is passed, make sure that padded feature vectors cannot be sampled
-        #     # sample negative quantized vectors BTC => (BxT)C
-        #     negative_quantized_features = quantized_features.view(-1, hidden_size)[
-        #         sampled_negative_indices.long().view(-1)
-        #     ]
-        #     negative_quantized_features = negative_quantized_features.view(
-        #         batch_size, sequence_length, -1, hidden_size
-        #     ).permute(2, 0, 1, 3)
+            # for training, we sample negatives
+            # 3. sample K negatives (distractors) quantized states for contrastive loss
+            # if attention_mask is passed, make sure that padded feature vectors cannot be sampled
+            # sample negative quantized vectors BTC => (BxT)C
+            negative_quantized_features = quantized_features.view(-1, hidden_size)[
+                sampled_negative_indices.long().view(-1)
+            ]
+            negative_quantized_features = negative_quantized_features.view(
+                batch_size, sequence_length, -1, hidden_size
+            ).permute(2, 0, 1, 3)
 
-        #     # 4. compute logits, corresponding to `logs = sim(c_t, [q_t, \sim{q}_t]) / \kappa`
-        #     # of equation (3) in https://arxiv.org/pdf/2006.11477.pdf
-        #     logits = self.compute_contrastive_logits(
-        #         quantized_features[None, :],
-        #         negative_quantized_features,
-        #         transformer_features,
-        #         self.config.contrastive_logits_temperature,
-        #     )
+            # 4. compute logits, corresponding to `logs = sim(c_t, [q_t, \sim{q}_t]) / \kappa`
+            # of equation (3) in https://arxiv.org/pdf/2006.11477.pdf
+            logits = self.compute_contrastive_logits(
+                quantized_features[None, :],
+                negative_quantized_features,
+                transformer_features,
+                self.config.contrastive_logits_temperature,
+            )
 
-        #     # 5. if a negative vector is identical to the positive (i.e. when codebook utilization is low),
-        #     # its cosine similarity will be masked
-        #     neg_is_pos = (quantized_features == negative_quantized_features).all(-1)
+            # 5. if a negative vector is identical to the positive (i.e. when codebook utilization is low),
+            # its cosine similarity will be masked
+            neg_is_pos = (quantized_features == negative_quantized_features).all(-1)
 
-        #     if neg_is_pos.any():
-        #         logits[1:][neg_is_pos] = float("-inf")
+            if neg_is_pos.any():
+                logits[1:][neg_is_pos] = float("-inf")
 
-        #     # 6. compute contrastive loss \mathbf{L}_m = cross_entropy(logs) =
-        #     # -log(exp(sim(c_t, q_t)/\kappa) / \sum_{\sim{q}} exp(sim(c_t, \sim{q})/\kappa))
-        #     logits = logits.transpose(0, 2).reshape(-1, logits.size(0))
-        #     target = ((1 - mask_time_indices.long()) * -100).transpose(0, 1).flatten()
+            # 6. compute contrastive loss \mathbf{L}_m = cross_entropy(logs) =
+            # -log(exp(sim(c_t, q_t)/\kappa) / \sum_{\sim{q}} exp(sim(c_t, \sim{q})/\kappa))
+            logits = logits.transpose(0, 2).reshape(-1, logits.size(0))
+            target = ((1 - mask_time_indices.long()) * -100).transpose(0, 1).flatten()
 
-        #     contrastive_loss = nn.functional.cross_entropy(logits.float(), target, reduction="sum")
-        #     # 7. compute diversity loss: \mathbf{L}_d
-        #     num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
-        #     diversity_loss = ((num_codevectors - codevector_perplexity) / num_codevectors) * mask_time_indices.sum()
+            contrastive_loss = nn.functional.cross_entropy(logits.float(), target, reduction="sum")
+            # 7. compute diversity loss: \mathbf{L}_d
+            num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
+            diversity_loss = ((num_codevectors - codevector_perplexity) / num_codevectors) * mask_time_indices.sum()
 
-        #     # 8. \mathbf{L} = \mathbf{L}_m + \alpha * \mathbf{L}_d
-        #     loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
+            # 8. \mathbf{L} = \mathbf{L}_m + \alpha * \mathbf{L}_d
+            loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
 
         #######################################################################################
         #######################################################################################
         #######################################################################################
 
-        total_loss_ls = list()
-        total_con_loss_ls = list()
-        total_div_loss_ls = list()
-        for idx, feat_idx_ls in enumerate(feat_split_idx):
-            start_idx = 0
-            con_loss_ls = list()
-            div_loss_ls = list()
-            loss_ls = list()
-            for feat_idx in feat_idx_ls:
-                end_idx = start_idx + int(feat_idx)
+        # total_loss_ls = list()
+        # total_con_loss_ls = list()
+        # total_div_loss_ls = list()
+        # for idx, feat_idx_ls in enumerate(feat_split_idx):
+        #     start_idx = 0
+        #     con_loss_ls = list()
+        #     div_loss_ls = list()
+        #     loss_ls = list()
+        #     for feat_idx in feat_idx_ls:
+        #         end_idx = start_idx + int(feat_idx)
 
-                sample_mask_time_indices = mask_time_indices[idx, start_idx:end_idx][None]
-                sm_sampled_negative_indices = sampled_negative_indices[idx, start_idx:end_idx][None]
-                quantized_features, codevector_perplexity = self.quantizer(
-                    extract_features[idx, start_idx:end_idx][None],
-                    mask_time_indices=sample_mask_time_indices,
-                )
+        #         sample_mask_time_indices = mask_time_indices[idx, start_idx:end_idx][None]
+        #         sm_sampled_negative_indices = sampled_negative_indices[idx, start_idx:end_idx][None]
+        #         quantized_features, codevector_perplexity = self.quantizer(
+        #             extract_features[idx, start_idx:end_idx][None],
+        #             mask_time_indices=sample_mask_time_indices,
+        #         )
 
-                quantized_features = quantized_features.to(self.project_q.weight.dtype)
-                quantized_features = self.project_q(quantized_features)
+        #         quantized_features = quantized_features.to(self.project_q.weight.dtype)
+        #         quantized_features = self.project_q(quantized_features)
 
-                loss = contrastive_loss = diversity_loss = None
-                if sampled_negative_indices is not None:
-                    batch_size, sequence_length, hidden_size = quantized_features.shape
+        #         loss = contrastive_loss = diversity_loss = None
+        #         if sampled_negative_indices is not None:
+        #             batch_size, sequence_length, hidden_size = quantized_features.shape
 
-                    # for training, we sample negatives
-                    # 3. sample K negatives (distractors) quantized states for contrastive loss
-                    # if attention_mask is passed, make sure that padded feature vectors cannot be sampled
-                    # sample negative quantized vectors BTC => (BxT)C
-                    negative_quantized_features = quantized_features.view(-1, hidden_size)[
-                        sm_sampled_negative_indices.long().view(-1)
-                    ]
-                    negative_quantized_features = negative_quantized_features.view(
-                        batch_size, sequence_length, -1, hidden_size
-                    ).permute(2, 0, 1, 3)
+        #             # for training, we sample negatives
+        #             # 3. sample K negatives (distractors) quantized states for contrastive loss
+        #             # if attention_mask is passed, make sure that padded feature vectors cannot be sampled
+        #             # sample negative quantized vectors BTC => (BxT)C
+        #             negative_quantized_features = quantized_features.view(-1, hidden_size)[
+        #                 sm_sampled_negative_indices.long().view(-1)
+        #             ]
+        #             negative_quantized_features = negative_quantized_features.view(
+        #                 batch_size, sequence_length, -1, hidden_size
+        #             ).permute(2, 0, 1, 3)
 
-                    # 4. compute logits, corresponding to `logs = sim(c_t, [q_t, \sim{q}_t]) / \kappa`
-                    # of equation (3) in https://arxiv.org/pdf/2006.11477.pdf
-                    logits = self.compute_contrastive_logits(
-                        quantized_features[None, :],
-                        negative_quantized_features,
-                        transformer_features[idx, start_idx:end_idx][None],
-                        self.config.contrastive_logits_temperature,
-                    )
+        #             # 4. compute logits, corresponding to `logs = sim(c_t, [q_t, \sim{q}_t]) / \kappa`
+        #             # of equation (3) in https://arxiv.org/pdf/2006.11477.pdf
+        #             logits = self.compute_contrastive_logits(
+        #                 quantized_features[None, :],
+        #                 negative_quantized_features,
+        #                 transformer_features[idx, start_idx:end_idx][None],
+        #                 self.config.contrastive_logits_temperature,
+        #             )
 
-                    # 5. if a negative vector is identical to the positive (i.e. when codebook utilization is low),
-                    # its cosine similarity will be masked
-                    neg_is_pos = (quantized_features == negative_quantized_features).all(-1)
+        #             # 5. if a negative vector is identical to the positive (i.e. when codebook utilization is low),
+        #             # its cosine similarity will be masked
+        #             neg_is_pos = (quantized_features == negative_quantized_features).all(-1)
 
-                    if neg_is_pos.any():
-                        logits[1:][neg_is_pos] = float("-inf")
+        #             if neg_is_pos.any():
+        #                 logits[1:][neg_is_pos] = float("-inf")
 
-                    # 6. compute contrastive loss \mathbf{L}_m = cross_entropy(logs) =
-                    # -log(exp(sim(c_t, q_t)/\kappa) / \sum_{\sim{q}} exp(sim(c_t, \sim{q})/\kappa))
-                    logits = logits.transpose(0, 2).reshape(-1, logits.size(0))
-                    target = ((1 - sample_mask_time_indices.long()) * -100).transpose(0, 1).flatten()
+        #             # 6. compute contrastive loss \mathbf{L}_m = cross_entropy(logs) =
+        #             # -log(exp(sim(c_t, q_t)/\kappa) / \sum_{\sim{q}} exp(sim(c_t, \sim{q})/\kappa))
+        #             logits = logits.transpose(0, 2).reshape(-1, logits.size(0))
+        #             target = ((1 - sample_mask_time_indices.long()) * -100).transpose(0, 1).flatten()
 
-                    contrastive_loss = nn.functional.cross_entropy(logits.float(), target, reduction="sum")
-                    # 7. compute diversity loss: \mathbf{L}_d
-                    num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
-                    diversity_loss = (
-                        (num_codevectors - codevector_perplexity) / num_codevectors
-                    ) * sample_mask_time_indices.sum()
+        #             contrastive_loss = nn.functional.cross_entropy(logits.float(), target, reduction="sum")
+        #             # 7. compute diversity loss: \mathbf{L}_d
+        #             num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
+        #             diversity_loss = (
+        #                 (num_codevectors - codevector_perplexity) / num_codevectors
+        #             ) * sample_mask_time_indices.sum()
 
-                    # 8. \mathbf{L} = \mathbf{L}_m + \alpha * \mathbf{L}_d
-                    loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
+        #             # 8. \mathbf{L} = \mathbf{L}_m + \alpha * \mathbf{L}_d
+        #             loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
 
-                start_idx += int(feat_idx)
+        #         start_idx += int(feat_idx)
 
-                con_loss_ls.append(contrastive_loss)
-                div_loss_ls.append(diversity_loss)
-                loss_ls.append(loss)
+        #         con_loss_ls.append(contrastive_loss)
+        #         div_loss_ls.append(diversity_loss)
+        #         loss_ls.append(loss)
 
-            total_loss_ls.append(torch.stack(loss_ls).sum())
-            total_con_loss_ls.append(torch.stack(con_loss_ls).sum())
-            total_div_loss_ls.append(torch.stack(div_loss_ls).sum())
+        #     total_loss_ls.append(torch.stack(loss_ls).sum())
+        #     total_con_loss_ls.append(torch.stack(con_loss_ls).sum())
+        #     total_div_loss_ls.append(torch.stack(div_loss_ls).sum())
 
-        loss = torch.stack(total_loss_ls).sum()
-        contrastive_loss = torch.stack(total_con_loss_ls).sum()
-        diversity_loss = torch.stack(total_div_loss_ls).sum()
+        # loss = torch.stack(total_loss_ls).sum()
+        # contrastive_loss = torch.stack(total_con_loss_ls).sum()
+        # diversity_loss = torch.stack(total_div_loss_ls).sum()
 
         if not return_dict:
             if loss is not None:
