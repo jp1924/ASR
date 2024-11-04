@@ -1,17 +1,21 @@
 import os
 import time
 import unicodedata
-from typing import Dict, Optional, Tuple, Union
+from itertools import chain
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from data import DataCollatorCTCWithPadding
-from datasets import Dataset, concatenate_datasets, load_dataset
+from data import DataCollatorCTCWithPadding, DataPackingCollatorCTCWithPadding
+from datasets import Dataset, concatenate_datasets, load_dataset, load_from_disk
 from evaluate import load
+from models import PackedWav2Vec2ForCTC
 from setproctitle import setproctitle
 from utils import (
     Wav2Vec2FinetuningArguments,
     get_feat_extract_output_lengths,
+    get_packing_dataset_idx,
+    get_packing_strategies,
     librosa_silence_filter,
     sentence_normalizer,
     set_scheduler,
@@ -38,8 +42,7 @@ logger = hf_logging.get_logger("transformers")
 
 def main(train_args: Wav2Vec2FinetuningArguments) -> None:
     def preprocessor(example):
-        sentence_ls = example[train_args.sentence_column_name]
-        audio_ls = example[train_args.audio_column_name]
+        sentence_ls, audio_ls = example[train_args.sentence_column_name], example[train_args.audio_column_name]
 
         finish_label_ls, finish_audio_ls, finish_length_ls = list(), list(), list()
         for sentence, audio in zip(sentence_ls, audio_ls):
@@ -56,7 +59,7 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
             )
 
             labels, input_values, length = (
-                outputs["input_ids"][0],
+                outputs["labels"][0],
                 outputs["input_values"][0],
                 outputs["input_values"][0].shape[0],
             )
@@ -80,8 +83,100 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
             train_args.min_duration_in_seconds <= length <= train_args.max_duration_in_seconds for length in length_ls
         ]
 
+    def packing_datasets(dataset: Dataset, split: str) -> Dataset:
+        def get_pack_length(length_ls):
+            return {"pack_length": [get_feat_extract_output_lengths(length, config) for length in length_ls]}
+
+        def packing_data_sample(packing_ls: List[List[int]], feat_length_ls: List[int], dataset: Dataset):
+            (
+                finish_pack_audio_ls,
+                finish_length_ls,
+                finish_labels_ls,
+                finish_mask_ls,
+                finish_target_lengths_ls,
+            ) = (
+                list(),
+                list(),
+                list(),
+                list(),
+                list(),
+            )
+            for pack, feat in zip(packing_ls, feat_length_ls):
+                sampled_pack = dataset.select(pack)
+                pack_audio = sampled_pack["input_values"]
+                pack_labels = list(chain(*sampled_pack["labels"]))
+                target_length = list(map(len, sampled_pack["labels"]))
+
+                end_indices = np.cumsum(feat)
+                start_indices = np.r_[0, end_indices[:-1]]
+
+                mask = np.zeros((train_args.packing_max_seq_len, train_args.packing_max_seq_len))
+
+                for start, end in zip(start_indices, end_indices):
+                    mask[start:end, start:end] = 1
+
+                finish_mask_ls.append(mask[None, None])
+                finish_pack_audio_ls.append(pack_audio)
+                finish_labels_ls.append(pack_labels)
+                finish_target_lengths_ls.append(target_length)
+                finish_length_ls.append(sum(sampled_pack["length"]))
+
+            return {
+                "input_values": finish_pack_audio_ls,
+                "attention_mask": finish_mask_ls,
+                "labels": finish_labels_ls,
+                "target_lengths": finish_target_lengths_ls,
+                "length": finish_length_ls,
+            }
+
+        cache_name = "_".join(sorted(x.split("/")[1] for x in train_args.dataset_repo_ls))
+        cache_path = train_args.cache_dir.joinpath(
+            f"{train_args.packing_max_seq_len}-{cache_name}-{split}-packing_idx_cache"
+        )
+        cache_file_path = train_args.cache_dir.joinpath(
+            f"{train_args.packing_max_seq_len}-packing_{cache_name}-{split}_{train_args.cache_file_name}"
+        )
+
+        if not cache_path.exists():
+            pack_length_dataset = dataset.map(
+                get_pack_length,
+                num_proc=train_args.preprocessing_num_workers,
+                batch_size=train_args.preprocessing_batch_size,
+                # keep_in_memory=True,
+                batched=True,
+                remove_columns="length",
+                input_columns="length",
+            )
+
+            length_ls = pack_length_dataset["pack_length"]
+            strategies_per_length = get_packing_strategies(
+                length_ls,
+                train_args.packing_max_seq_len,
+                train_args.packing_max_elem,
+            )
+            packing_idx_dataset = get_packing_dataset_idx(length_ls, strategies_per_length)
+            packing_idx_dataset.save_to_disk(cache_path.as_posix())
+        else:
+            packing_idx_dataset = load_from_disk(cache_path.as_posix())
+
+        packing_dataset = packing_idx_dataset.map(
+            packing_data_sample,
+            # num_proc=1,
+            num_proc=train_args.preprocessing_num_workers,
+            batch_size=train_args.preprocessing_batch_size,
+            load_from_cache_file=True,
+            batched=True,
+            cache_file_name=cache_file_path.as_posix(),
+            remove_columns=["packing_ls", "feat_length_ls"],
+            input_columns=["packing_ls", "feat_length_ls"],
+            fn_kwargs={"dataset": dataset},
+        )
+
+        return packing_dataset
+
     def prepare_datasets() -> Tuple[Optional[Dataset], Optional[Dataset], Optional[Dataset]]:
-        train_dataset_ls, valid_dataset_ls, test_dataset_ls = list(), list(), list()
+        train_dataset_ls, valid_dataset_dict, test_dataset_dict = list(), dict(), dict()
+
         for repo_name in train_args.dataset_repo_ls:
             start_time = time.time()
 
@@ -155,11 +250,11 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
 
                 if dataset_key in train_args.valid_dataset_prefix and train_args.do_eval:
                     dataset = datasets[dataset_key]
-                    valid_dataset_ls.append(dataset)
+                    valid_dataset_dict.update({f"{repo_name}-{dataset_key}": dataset})
 
                 if dataset_key in train_args.test_dataset_prefix and train_args.do_predict:
                     dataset = datasets[dataset_key]
-                    test_dataset_ls.append(dataset)
+                    test_dataset_dict.update({f"{repo_name}-{dataset_key}": dataset})
 
                 if dataset and is_main_process(train_args.local_rank):
                     length_ls = sorted(dataset[train_args.length_column_name], reverse=True)
@@ -171,21 +266,23 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         train_dataset = None
         if train_dataset_ls:
             train_dataset = concatenate_datasets(train_dataset_ls)
+            if train_args.do_packing:
+                train_dataset = packing_datasets(train_dataset, "train")
             train_dataset.set_format("pt")
             if is_main_process(train_args.local_rank):
                 logger.info(f"train_dataset:\n{train_dataset}")
 
         valid_dataset = None
-        if valid_dataset_ls:
-            valid_dataset = concatenate_datasets(valid_dataset_ls)
-            valid_dataset.set_format("pt")
+        if valid_dataset_dict:
+            valid_dataset = valid_dataset_dict
+
             if is_main_process(train_args.local_rank):
                 logger.info(f"valid_dataset:\n{valid_dataset}")
 
         test_dataset = None
-        if test_dataset_ls:
-            test_dataset = concatenate_datasets(test_dataset_ls)
-            test_dataset.set_format("pt")
+        if test_dataset_dict:
+            test_dataset = test_dataset_dict
+
             if is_main_process(train_args.local_rank):
                 logger.info(f"test_dataset:\n{test_dataset}")
 
@@ -209,10 +306,14 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
         return {"wer": wer_score, "cer": cer_score}
 
     # load model, feature_extractor, tokenizer
-    model_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
-    config = Wav2Vec2Config.from_pretrained(model_path, attn_implementation=train_args.attn_implementation)
-    model = Wav2Vec2ForCTC.from_pretrained(model_path, config=config)
-    processor = Wav2Vec2Processor.from_pretrained(model_path)
+    model_name_or_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
+    config = Wav2Vec2Config.from_pretrained(model_name_or_path, attn_implementation=train_args.attn_implementation)
+    if train_args.do_packing:
+        model = PackedWav2Vec2ForCTC.from_pretrained(model_name_or_path, config=config)
+    else:
+        model = Wav2Vec2ForCTC.from_pretrained(model_name_or_path, config=config)
+
+    processor = Wav2Vec2Processor.from_pretrained(model_name_or_path)
 
     if train_args.torch_compile:
         model = torch.compile(
@@ -226,10 +327,18 @@ def main(train_args: Wav2Vec2FinetuningArguments) -> None:
     train_dataset, valid_dataset, test_dataset = prepare_datasets()
 
     # set collator
-    collator = DataCollatorCTCWithPadding(
-        processor=processor,
-        pad_to_multiple_of=train_args.pad_to_multiple_of,
-    )
+    if train_args.do_packing:
+        collator = DataPackingCollatorCTCWithPadding(
+            processor=processor,
+            config=config,
+            packing_max_seq_len=train_args.packing_max_seq_len,
+            pad_to_multiple_of=train_args.pad_to_multiple_of,
+        )
+    else:
+        collator = DataCollatorCTCWithPadding(
+            processor=processor,
+            pad_to_multiple_of=train_args.pad_to_multiple_of,
+        )
 
     # set metrics
     wer_metric, cer_metric = load("wer"), load("cer")
