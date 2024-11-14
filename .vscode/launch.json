@@ -188,7 +188,6 @@
                 "NCCL_P2P_DISABLE": "1",
                 "NCCL_IB_DISABLE": "1",
                 "OMP_NUM_THREADS": "4",
-                "HF_TOKEN": "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",
             },
             "justMyCode": false,
             "args": [
