@@ -6,17 +6,13 @@
         "enabled": "auto"
     },
     "zero_optimization": {
-        "stage": 3,
+        "stage": 2,
         "allgather_partitions": true,
-        "stage3_prefetch_bucket_size": 0,
-        "stage3_max_live_parameters": 0,
-        "stage3_max_reuse_distance": 0,
         "allgather_bucket_size": 5e7,
-        "overlap_comm": false,
+        "overlap_comm": true,
         "reduce_scatter": true,
         "reduce_bucket_size": 5e7,
         "contiguous_gradients": true,
-        "stage3_gather_16bit_weights_on_model_save": true,
         "offload_optimizer": {
             "device": "cpu",
             "pin_memory": true
@@ -28,6 +24,7 @@
     "train_batch_size": "auto",
     "train_micro_batch_size_per_gpu": "auto",
     "wall_clock_breakdown": false,
+    "zero_allow_untested_optimizer": true,
     "activation_checkpointing": {
         "partition_activations": true,
         "cpu_checkpointing": true,
@@ -35,5 +32,13 @@
         "number_checkpoints": 10,
         "synchronize_checkpoint_boundary": false,
         "profile": false
+    },
+    "flops_profiler": {
+        "enabled": false,
+        "profile_step": 1,
+        "module_depth": -1,
+        "top_modules": 1,
+        "detailed": true,
+        "output_file": "/root/output_dir/test"
     }
 }

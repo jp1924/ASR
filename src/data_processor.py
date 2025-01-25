@@ -7,7 +7,8 @@ import librosa
 import numpy as np
 from kss import Kss
 
-from transformers import PretrainedConfig
+from transformers import PretrainedConfig, ProcessorMixin, TrainingArguments
+from transformers import logging as hf_logging
 
 
 # 해당 모델은 한국어를 소리 그대로 전사하는 것에 목표가 있음
@@ -364,3 +365,37 @@ def get_feat_extract_output_lengths(
             input_lengths = _conv_out_length(input_lengths, 1, config.adapter_stride)
 
     return input_lengths
+
+
+hf_logging.set_verbosity_info()
+logger = hf_logging.get_logger("transformers")
+
+
+def wav2vec2_pretrain_preprocessor(
+    example,
+    processor: ProcessorMixin,
+    args: TrainingArguments,
+    config: PretrainedConfig,
+):
+    audio_ls = example[args.audio_column_name]
+
+    finish_length_ls, finish_audio_ls = list(), list()
+    for audio in audio_ls:
+        audio = librosa_silence_filter(audio["array"])
+
+        if not audio.any():
+            continue
+
+        outputs = processor(audio=audio, sampling_rate=args.sampling_rate, return_tensors="np")
+        audio, length = outputs["input_values"][0], outputs["input_values"][0].shape[0]
+
+        length = get_feat_extract_output_lengths(length, config)
+
+        finish_audio_ls.append(audio)
+        finish_length_ls.append(length)
+
+    outputs = {
+        "input_values": finish_audio_ls,
+        args.length_column_name: finish_length_ls,
+    }
+    return outputs

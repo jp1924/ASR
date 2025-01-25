@@ -14,11 +14,12 @@ RUN apt-get update && \
 
 RUN ln -s /usr/bin/python3.10 /usr/bin/python
 
+# transformers는 #35196 PR기준
 RUN pip install -U pip wheel setuptools && \
-    pip install transformers==4.46.1 && \
-    pip install accelerate==0.33.0 datasets==2.21.0 evaluate==0.4.2 peft==0.12.0 deepspeed==0.15.0 fire==0.7.0 && \
-    pip install kss==6.0.4 bitsandbytes==0.43.3 scipy==1.14.1 sentencepiece==0.2.0 librosa==0.10.2 jiwer==3.0.4 soundfile==0.12.1 torch-audiomentations==0.11.1 && \
+    pip install git+https://github.com/huggingface/transformers.git@d5aebc64653d09660818109f2fac55b5e1031023 && \
+    pip install accelerate datasets evaluate trl peft deepspeed && \
+    pip install kss bitsandbytes scipy sentencepiece librosa jiwer soundfile torch-audiomentations && \
     pip install ruff natsort setproctitle glances[gpu] wandb comet-ml cmake
 
-RUN pip install torch==2.4.0+cu121 torchaudio==2.4.0+cu121 --index-url https://download.pytorch.org/whl/cu121 && \
-    pip install flash-attn==2.6.3
+RUN pip install torch==2.5.1+cu121 torchaudio==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121 && \
+    pip install flash-attn==2.7.0.post2

@@ -1,16 +1,23 @@
+import random
+from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
+from datasets import Dataset
 from torch._tensor import Tensor
 from torch.nn.modules import Module
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler, Sampler
 
-from transformers import Trainer
+from transformers import FeatureExtractionMixin, PreTrainedModel, Trainer
+from transformers.data.data_collator import DataCollatorMixin
 from transformers.integrations.deepspeed import deepspeed_init
+from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
 from transformers.trainer_pt_utils import (
     IterableDatasetShard,
+    LengthGroupedSampler,
     find_batch_size,
     nested_concat,
     nested_detach,
@@ -21,10 +28,12 @@ from transformers.trainer_utils import (
     EvalPrediction,
     denumpify_detensorize,
     has_length,
+    seed_worker,
 )
 from transformers.training_args import OptimizerNames
 from transformers.utils import (
     is_apex_available,
+    is_datasets_available,
     is_sagemaker_mp_enabled,
     is_torch_mlu_available,
     is_torch_mps_available,
@@ -63,7 +72,273 @@ def multiply_grads(params: torch.nn.Parameter, loss: torch.Tensor) -> None:
             p.grad.data.mul_(loss)
 
 
-class Wav2Vec2Pretrainer(Trainer):
+# packing을 위한거
+def __packing_getitems__(self, keys: List[List[int]]) -> List:
+    """Can be used to get a batch using a list of integers indices."""
+
+    return_ls = list()
+    for key in keys:
+        batch = self.__getitem__(key)
+        n_examples = len(batch[next(iter(batch))])
+
+        return_ls.append([{col: array[i] for col, array in batch.items()} for i in range(n_examples)])
+    return return_ls
+
+
+@dataclass
+class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
+    model: PreTrainedModel
+    feature_extractor: FeatureExtractionMixin
+    pack_max_seq: int = 512
+    mask_time_prob: float = 0.65
+    mask_time_length: int = 10
+    mask_time_min_masks: int = 0
+    num_negatives: int = 100
+    return_tensors: str = "pt"
+
+    def _pad_mask(self, mask_time_indices_ls, max_time_len):
+        mask_padder = lambda mask: np.pad(  # noqa: E731
+            mask[0], (0, max_time_len - mask.shape[1]), "constant", constant_values=0
+        )
+        padded_mask = [mask_padder(mask_time_indices) for mask_time_indices in mask_time_indices_ls]
+        return np.stack(padded_mask)
+
+    def _process_packing_list(self, feature_ls):
+        input_values_ls, position_ids_ls, mask_time_indices_ls = list(), list(), list()
+        for packing_ls in feature_ls:
+            for feature in packing_ls:
+                input_values = feature["input_values"]
+                length = self.model._get_feat_extract_output_lengths(len(input_values)).item()
+
+                mask_indices = _compute_mask_indices(
+                    (1, length),
+                    self.mask_time_prob,
+                    self.mask_time_length,
+                    min_masks=self.mask_time_min_masks,
+                )
+
+                input_values_ls.append(input_values)
+                position_ids_ls.append(torch.arange(length))
+                mask_time_indices_ls.append(mask_indices)
+
+        max_time_len = max(mask_time_indices.shape[1] for mask_time_indices in mask_time_indices_ls)
+        padded_mask = self._pad_mask(mask_time_indices_ls, max_time_len)
+
+        mask_time_indices = np.concatenate(mask_time_indices_ls, axis=-1)
+        sampled_negative_indices = _sample_negative_indices(
+            padded_mask.shape,
+            self.num_negatives,
+            mask_time_indices=padded_mask,
+        )
+
+        batch = dict()
+        batch["input_values"] = input_values_ls
+        batch["position_ids"] = torch.concat(position_ids_ls)
+        batch["mask_time_indices"] = torch.tensor(mask_time_indices)
+        batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices)
+
+        return batch
+
+    def _process_feature_list(self, feature_ls):
+        features = [{"input_values": x["input_values"]} for x in feature_ls]
+
+        # reformat list to dict and set to pytorch format
+        batch = self.feature_extractor.pad(
+            features,
+            padding=True,
+            return_attention_mask=True,
+            return_tensors=self.return_tensors,
+        )
+
+        device = batch.input_values.device
+        batch_size, sample_size = batch.input_values.shape
+        mask_indices_seq_length = self.model._get_feat_extract_output_lengths(sample_size).item()
+
+        # make sure that no loss is computed on padded inputs
+        if hasattr(batch, "attention_mask") is not None and self.model.training:
+            batch["sub_attention_mask"] = self.model._get_feature_vector_attention_mask(
+                mask_indices_seq_length,
+                batch.attention_mask,
+            )
+
+        features_shape = (batch_size, mask_indices_seq_length)
+
+        # sample randomly masked indices
+        mask_time_indices = _compute_mask_indices(
+            shape=features_shape,
+            mask_prob=self.mask_time_prob,
+            mask_length=self.mask_time_length,
+            attention_mask=batch.get("sub_attention_mask"),
+            min_masks=self.mask_time_min_masks,
+        )
+
+        # sample negative indices
+        sampled_negative_indices = _sample_negative_indices(
+            features_shape=features_shape,
+            num_negatives=self.num_negatives,
+            mask_time_indices=mask_time_indices,
+        )
+        batch["mask_time_indices"] = torch.tensor(mask_time_indices, dtype=torch.long, device=device)
+        batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices, dtype=torch.long, device=device)
+
+        return batch.to(self.model.dtype)
+
+    def torch_call(self, feature_ls):
+        if isinstance(feature_ls, list) and isinstance(feature_ls[0], list):
+            return self._process_packing_list(feature_ls)
+        else:
+            return self._process_feature_list(feature_ls)
+
+
+class PackingSampler(Sampler):
+    def __init__(
+        self,
+        dataset: Dataset,
+        lengths: List[int],
+        max_seq_len: int,
+        max_seq_per_pack: int,
+        do_shuffle: bool = False,
+    ):
+        self.dataset = dataset
+
+        self.packing_strategies = self._get_packing_strategies(
+            lengths=lengths,
+            max_seq_len=max_seq_len,
+            max_seq_per_pack=max_seq_per_pack,
+        )
+
+        self.do_shuffle = do_shuffle
+        self.lengths = lengths
+
+        self.packing_sample_ls = self._transform_length_to_indices(
+            strategies_per_length=self.packing_strategies,
+            lengths=self.lengths,
+        )
+
+    def _get_packing_strategies(
+        self,
+        lengths: List[int],
+        max_seq_len: int,
+        max_seq_per_pack: int,
+    ) -> dict:
+        def add_pack(
+            pack: List[int],
+            count: int,
+            tmp: defaultdict,
+            final: defaultdict,
+            limit: int,
+            offset: int,
+        ) -> None:
+            if len(pack) == limit or offset == 0:
+                final[offset].append((count, pack))
+            else:
+                tmp[offset].append((count, pack))
+
+        seq_lens, counts = np.unique(lengths, return_counts=True)
+        histogram = np.zeros(max_seq_len, dtype=np.int64)
+        histogram[seq_lens - 1] = counts
+
+        reversed_histogram = np.flip(histogram)
+
+        tmp_strategies_per_length = defaultdict(list)
+        strategies_per_length = defaultdict(list)
+
+        for i in range(max_seq_len):
+            n_sequences_to_bin = reversed_histogram[i]
+            length_to_bin = max_seq_len - i
+            offset = i + 1  # largest possible offset
+            while n_sequences_to_bin > 0:
+                if (length_to_bin + offset) in tmp_strategies_per_length:
+                    # extract shortest pack that will get modified
+                    n_sequences_to_pack, pack = tmp_strategies_per_length[length_to_bin + offset].pop()
+                    new_pack = pack + [length_to_bin]
+                    count = min(n_sequences_to_pack, n_sequences_to_bin)
+                    if n_sequences_to_pack > n_sequences_to_bin:
+                        # old pack gets reduced
+                        n_sequences_to_pack -= n_sequences_to_bin
+                        tmp_strategies_per_length[length_to_bin + offset].append((n_sequences_to_pack, pack))
+                        n_sequences_to_bin = 0
+                    else:
+                        n_sequences_to_bin -= n_sequences_to_pack
+                    add_pack(
+                        new_pack, count, tmp_strategies_per_length, strategies_per_length, max_seq_per_pack, offset
+                    )
+                    # clean up to speed up main key search
+                    if not tmp_strategies_per_length[length_to_bin + offset]:
+                        tmp_strategies_per_length.pop(length_to_bin + offset)
+                else:
+                    offset -= 1
+                # Does not fit anywhere. Create new pack.
+                if offset < 0:
+                    add_pack(
+                        [length_to_bin],
+                        n_sequences_to_bin,
+                        tmp_strategies_per_length,
+                        strategies_per_length,
+                        max_seq_per_pack,
+                        i,
+                    )
+                    n_sequences_to_bin = 0
+        # merge all strategies
+        for key in tmp_strategies_per_length:
+            strategies_per_length[key].extend(tmp_strategies_per_length[key])
+
+        return strategies_per_length
+
+    def _transform_length_to_indices(self, strategies_per_length: dict, lengths: List[int]) -> List[List[int]]:
+        length_to_indices = {}
+        length_array = np.array(lengths)
+        unique_lengths = np.unique(length_array).tolist()
+
+        for length in unique_lengths:
+            dataset_idx_ls = np.where(length_array == length)[0].tolist()
+            if self.do_shuffle:
+                random.shuffle(dataset_idx_ls)
+            length_to_indices[length] = dataset_idx_ls
+
+        pack_strategies_ls = [
+            pack
+            for strategies in strategies_per_length.values()
+            for strategies_num, pack_strategies in strategies
+            for pack in ([pack_strategies] * strategies_num)
+        ]
+
+        packing_sample_ls = list()
+        for pack_strategies in pack_strategies_ls:
+            pack_size = len(pack_strategies)
+            strategie_position = 0
+
+            dataset_idx_ls = list()
+            while strategie_position + 1 <= pack_size:
+                length = pack_strategies[strategie_position]
+                pack_length_ls = length_to_indices[length]
+                dataset_idx_ls.append(pack_length_ls.pop())
+                length_to_indices[length] = pack_length_ls
+                strategie_position += 1
+
+            packing_sample_ls.append(dataset_idx_ls)
+
+        if self.do_shuffle:
+            random.shuffle(packing_sample_ls)
+
+        return packing_sample_ls
+
+    def __iter__(self):
+        if self.do_shuffle:
+            packing_sample_ls = self._transform_length_to_indices(
+                strategies_per_length=self.packing_strategies,
+                lengths=self.lengths,
+            )
+        else:
+            packing_sample_ls = self.packing_sample_ls
+
+        return iter(packing_sample_ls)
+
+    def __len__(self):
+        return len(self.packing_sample_ls)
+
+
+class ASRPreTrainer(Trainer):
     contrastive_loss = 0.0
     diversity_loss = 0.0
     loss = 0.0
@@ -125,8 +400,9 @@ class Wav2Vec2Pretrainer(Trainer):
             with amp.scale_loss(loss, self.optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
+            # BUG: Accelerate에서 gradient accumulation을 자동 처리하므로 여기서 loss *= gradient_accumulation_steps는
+            #      중복 스케일링을 일으킬 수 있습니다.
             loss *= self.args.gradient_accumulation_steps
-            # NOTE: accelerate에서 gradient accumulation을 자동으로 계산 해줌. 어떻게 하는지는 모르지만....
             self.accelerator.backward(loss)
 
         # NOTE: https://github.com/huggingface/transformers/pull/13877#discussion_r723197919 참고
@@ -161,7 +437,7 @@ class Wav2Vec2Pretrainer(Trainer):
         # 최소한의 코드 수정을 요하기 위해 이런 방식을 사용함.
         return loss.detach() / self.args.gradient_accumulation_steps
 
-    def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval):
+    def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
         if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
             if is_torch_xla_available():
                 xm.mark_step()
@@ -200,7 +476,7 @@ class Wav2Vec2Pretrainer(Trainer):
             self._globalstep_last_logged = self.state.global_step
             self.store_flos()
 
-            self.log(logs)
+            self.log(logs, start_time)
 
         metrics = None
         if self.control.should_evaluate:
@@ -215,7 +491,7 @@ class Wav2Vec2Pretrainer(Trainer):
                 self.lr_scheduler.step(metrics[metric_to_check])
 
         if self.control.should_save:
-            self._save_checkpoint(model, trial, metrics=metrics)
+            self._save_checkpoint(model, trial)
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
 
     def prediction_step(
@@ -600,3 +876,95 @@ class Wav2Vec2Pretrainer(Trainer):
                 metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
 
         return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples)
+
+    def get_train_dataloader(self) -> DataLoader:
+        """
+        Returns the training [`~torch.utils.data.DataLoader`].
+
+        Will use no sampler if `train_dataset` does not implement `__len__`, a random sampler (adapted to distributed
+        training if necessary) otherwise.
+
+        Subclass and override this method if you want to inject some custom behavior.
+        """
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+
+        # NOTE: packing을 사용할 경우 packing에 알맞은 getitems를 사용하도록 합니다.
+        if self.args.do_packing:
+            # 래핑된 함수를 정의하여 self를 전달할 수 있도록 합니다.
+            def getitems_wrapper(keys):
+                return __packing_getitems__(self.train_dataset, keys)
+
+            setattr(self.train_dataset, "__getitems__", getitems_wrapper)
+
+        train_dataset = self.train_dataset
+        data_collator = self.data_collator
+        if is_datasets_available() and isinstance(train_dataset, Dataset):
+            train_dataset = self._remove_unused_columns(train_dataset, description="training")
+        else:
+            data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
+
+        dataloader_params = {
+            "batch_size": self._train_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(train_dataset, torch.utils.data.IterableDataset):
+            dataloader_params["sampler"] = self._get_train_sampler()
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["worker_init_fn"] = seed_worker
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
+
+    def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
+        if self.train_dataset is None or not has_length(self.train_dataset):
+            logger.info("length 혹은 train_dataset이 없어서 RandomSampler를 사용합니다.")
+            return None
+
+        if self.args.group_by_length and self.args.do_packing:
+            raise ValueError("group_by_length and do_packing cannot be used together.")
+
+        # Build the sampler.
+        if self.args.group_by_length:
+            if is_datasets_available() and isinstance(self.train_dataset, Dataset):
+                lengths = (
+                    self.train_dataset[self.args.length_column_name]
+                    if self.args.length_column_name in self.train_dataset.column_names
+                    else None
+                )
+            else:
+                lengths = None
+            model_input_name = (
+                self.processing_class.model_input_names[0] if self.processing_class is not None else None
+            )
+            return LengthGroupedSampler(
+                self.args.train_batch_size * self.args.gradient_accumulation_steps,
+                dataset=self.train_dataset,
+                lengths=lengths,
+                model_input_name=model_input_name,
+            )
+        elif self.args.do_packing:
+            if is_datasets_available() and isinstance(self.train_dataset, Dataset):
+                lengths = (
+                    self.train_dataset[self.args.length_column_name]
+                    if self.args.length_column_name in self.train_dataset.column_names
+                    else None
+                )
+            else:
+                lengths = None
+
+            logger.info("packing sampler를 사용합니다.")
+            return PackingSampler(
+                dataset=self.train_dataset,
+                lengths=lengths,
+                max_seq_len=self.args.audio_max_seq,
+                max_seq_per_pack=self.args.packing_max_elem,
+                do_shuffle=self.args.packing_shuffle,
+            )
+
+        else:
+            return RandomSampler(self.train_dataset)
