@@ -8,7 +8,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import torch
 from data_processor import wav2vec2_pretrain_preprocessor
 from datasets import Dataset, concatenate_datasets, load_dataset
-from models import PackedWav2Vec2ForPreTraining
+from models import PackedWav2Vec2ConformerForPreTraining, PackedWav2Vec2ForPreTraining
 from setproctitle import setproctitle
 from trainer import ASRPreTrainer, DataPackingCollatorForWav2Vec2Pretraining
 
@@ -25,6 +25,11 @@ from transformers.trainer_utils import is_main_process
 
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
+
+
+PROCESS_FUNC_MAP = {
+    "wav2vec2_pretrain": wav2vec2_pretrain_preprocessor,
+}
 
 
 @dataclass
@@ -358,7 +363,6 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
     model_name_or_path = train_args.resume_from_checkpoint or train_args.model_name_or_path
     processor = Wav2Vec2Processor.from_pretrained(model_name_or_path, **train_args.processor_kwargs)
     config = Wav2Vec2Config.from_pretrained(model_name_or_path, **train_args.config_kwargs)
-
     model_kwargs = {"config": config, **train_args.model_kwargs}
     model = PackedWav2Vec2ForPreTraining.from_pretrained(model_name_or_path, **model_kwargs)
 
@@ -370,19 +374,15 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
             fullgraph=True,
         )
 
-    match train_args.data_preprocessor_type:
-        case "wav2vec2-pretrain":
-            preprocessor_func = wav2vec2_pretrain_preprocessor
-
-    context = (
+    with (
         train_args.main_process_first(desc="main_process_first")
         if train_args.do_data_main_process_first
         else nullcontext()
-    )
-
-    with context:
+    ):
         # load datasets
-        train_dataset, valid_dataset, test_dataset = processing_datasets(preprocessor_func)
+        train_dataset, valid_dataset, test_dataset = processing_datasets(
+            PROCESS_FUNC_MAP[train_args.data_preprocessor_type]
+        )
 
     # set collator
     collator = DataPackingCollatorForWav2Vec2Pretraining(
