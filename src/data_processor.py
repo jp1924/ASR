@@ -399,3 +399,47 @@ def wav2vec2_pretrain_preprocessor(
         args.length_column_name: finish_length_ls,
     }
     return outputs
+
+
+def wav2vec2_ctc_finetune_preprocessor(
+    example,
+    processor: ProcessorMixin,
+    args: TrainingArguments,
+    config: PretrainedConfig,
+):
+    process_finish_ls = list()
+    for row_dataset in list(zip(*[example[key] for key in example])):
+        row_dataset = {key: value for key, value in zip(example.keys(), row_dataset)}  # noqa: C416
+
+        sentence = sentence_normalizer(row_dataset[args.sentence_column_name])
+        audio = librosa_silence_filter(row_dataset[args.audio_column_name]["array"])
+
+        if not audio.any() or not sentence:
+            continue
+
+        outputs = processor(
+            text=sentence,
+            audio=audio,
+            sampling_rate=args.sampling_rate,
+            return_tensors="np",
+        )
+
+        length = outputs["input_values"][0].shape[0]
+
+        if len(sentence) > get_feat_extract_output_lengths(length, config):
+            continue
+
+        process_finish_ls.append(
+            {
+                "input_values": outputs["input_values"][0],
+                "labels": outputs["labels"][0],
+                "length": length,
+            }
+        )
+
+    return_dict = dict()
+    for res in process_finish_ls:
+        for key, value in res.items():
+            return_dict.setdefault(key, []).append(value)
+
+    return return_dict
