@@ -12,6 +12,7 @@ import torch
 from data_processor import wav2vec2_finetune_ctc_preprocessor
 from datasets import Dataset, concatenate_datasets, load_dataset
 from evaluate import load
+from optimization import NewSchedulerType, set_scheduler
 from setproctitle import setproctitle
 from trainer import DataCollatorCTCWithPadding
 
@@ -101,6 +102,11 @@ class DataPipelineArguments:
 
 @dataclass
 class TrainPipelineArguments:
+    # 이걸 해야 스케줄러가 정상적으로 적용됨.
+    lr_scheduler_type: Union[NewSchedulerType, str] = field(
+        default="linear",
+        metadata={"help": "The scheduler type to use."},
+    )
     # model
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models."}
@@ -220,6 +226,8 @@ class FinetuneCTCArguments(TrainingArguments, DataPipelineArguments, TrainPipeli
 
         self.cache_dir = Path(self.cache_dir) if self.cache_dir else None
         self.model_name_or_path = self.resume_from_checkpoint or self.model_name_or_path
+
+        set_scheduler()
 
     @property
     def is_local_process_zero(self) -> bool:
