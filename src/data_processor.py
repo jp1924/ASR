@@ -401,7 +401,7 @@ def wav2vec2_pretrain_preprocessor(
     return outputs
 
 
-def wav2vec2_ctc_finetune_preprocessor(
+def wav2vec2_finetune_ctc_preprocessor(
     example,
     processor: ProcessorMixin,
     args: TrainingArguments,
