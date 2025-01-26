@@ -166,7 +166,7 @@ class TrainPipelineArguments:
 
 
 @dataclass
-class Wav2Vec2PretrainingArguments(TrainingArguments, DataPipelineArguments, TrainPipelineArguments):
+class PretrainArguments(TrainingArguments, DataPipelineArguments, TrainPipelineArguments):
     output_dir: str = field(
         default=None,
         metadata={"help": "The output directory where the model predictions and checkpoints will be written."},
@@ -256,7 +256,7 @@ class Wav2Vec2PretrainingArguments(TrainingArguments, DataPipelineArguments, Tra
             return self.process_index == 0
 
 
-def main(train_args: Wav2Vec2PretrainingArguments) -> None:
+def main(train_args: PretrainArguments) -> None:
     def processing_datasets(func: Callable) -> Tuple[Optional[Dataset], Optional[Dataset], Optional[Dataset]]:
         def process_dataset(
             dataset: Dataset,
@@ -415,7 +415,7 @@ def main(train_args: Wav2Vec2PretrainingArguments) -> None:
         logger.info("do_predict 코드는 아직 작성 중")
 
 
-def train(trainer: ASRPreTrainer, args: Wav2Vec2PretrainingArguments) -> None:
+def train(trainer: ASRPreTrainer, args: PretrainArguments) -> None:
     # NOTE: profiling 옵션 켜두면 성능 측정 overhead가 생길 수 있음
     from accelerate import ProfileKwargs
 
@@ -440,7 +440,7 @@ def valid(trainer: ASRPreTrainer, valid_datasets: Optional[Union[Dataset, Dict[s
 
 
 if __name__ == "__main__":
-    parser = HfArgumentParser([Wav2Vec2PretrainingArguments])
+    parser = HfArgumentParser([PretrainArguments])
     train_args, remain_args = parser.parse_args_into_dataclasses(return_remaining_strings=True)
 
     if remain_args and is_main_process(train_args.local_rank):
