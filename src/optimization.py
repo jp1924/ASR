@@ -1,16 +1,26 @@
 import importlib
 import math
+from enum import EnumMeta
 from functools import partial
 from typing import Union
 
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 
-from transformers.optimization import TYPE_TO_SCHEDULER_FUNCTION
-from transformers.trainer_utils import SchedulerType
+import transformers.trainer_utils
+from transformers.optimization import TYPE_TO_SCHEDULER_FUNCTION, SchedulerType
+from transformers.utils import ExplicitEnum
 
 
-class NewSchedulerType(SchedulerType):
+class NewSchedulerMeta(EnumMeta):
+    def __new__(metacls, name, bases, class_dict):
+        # SchedulerType의 멤버를 동적으로 추가
+        for member in SchedulerType:
+            class_dict[member.name] = member.value
+        return super().__new__(metacls, name, bases, class_dict)
+
+
+class NewSchedulerType(ExplicitEnum, metaclass=NewSchedulerMeta):
     TRI_STAGE = "tri_stage"  # 추가됨
 
 
@@ -63,19 +73,10 @@ def get_tri_stage_schedule_with_warmup_lr_lambda(
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
-def set_scheduler():
-    NEW_TYPE_TO_SCHEDULER_FUNCTION = TYPE_TO_SCHEDULER_FUNCTION
-    NEW_TYPE_TO_SCHEDULER_FUNCTION.update({NewSchedulerType.TRI_STAGE: get_tri_stage_schedule_with_warmup_lr_lambda})
+NEW_TYPE_TO_SCHEDULER_FUNCTION = TYPE_TO_SCHEDULER_FUNCTION
+NEW_TYPE_TO_SCHEDULER_FUNCTION.update({NewSchedulerType.TRI_STAGE: get_tri_stage_schedule_with_warmup_lr_lambda})
 
-    # NOTE: 빼놓고 추가하지 않은 곳이 있으면 정상동작 안할 가능성이 존재함. 확인 필요
-    module = importlib.import_module("transformers.optimization")
-    setattr(module, "TYPE_TO_SCHEDULER_FUNCTION", NEW_TYPE_TO_SCHEDULER_FUNCTION)
-
-    module = importlib.import_module("transformers.trainer_utils")
-    setattr(module, "SchedulerType", NewSchedulerType)
-
-    module = importlib.import_module("transformers.training_args")
-    setattr(module, "SchedulerType", NewSchedulerType)
-
-    module = importlib.import_module("transformers.optimization")
-    setattr(module, "SchedulerType", NewSchedulerType)
+transformers.trainer_utils.SchedulerType = NewSchedulerType
+transformers.training_args.SchedulerType = NewSchedulerType
+transformers.optimization.SchedulerType = NewSchedulerType
+transformers.optimization.TYPE_TO_SCHEDULER_FUNCTION = TYPE_TO_SCHEDULER_FUNCTION
