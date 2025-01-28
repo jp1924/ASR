@@ -5,8 +5,8 @@ from unicodedata import normalize
 
 import librosa
 import numpy as np
-from kss import Kss
 
+# from kss import Kss
 from transformers import PretrainedConfig, ProcessorMixin, TrainingArguments
 from transformers import logging as hf_logging
 
@@ -68,7 +68,7 @@ unidentification_filter_regex = re.compile(
 space_norm: str = lambda x: double_space_regex.sub(" ", x).strip()  # noqa: E731
 special_char_norm: str = lambda x: special_char_regex.sub("", x)  # noqa: E731
 
-remove_invisible_chars = Kss("remove_invisible_chars")
+# remove_invisible_chars = Kss("remove_invisible_chars")
 
 
 def normal_dual_transcript_extractor(
@@ -291,7 +291,7 @@ def sentence_normalizer(sentence: str) -> str:
     # KsponSpeech 기준
     # 자/ 몸짱 열풍 다이어트에 성공하겠다.\xa0(5)/(오) 위 였구요.
     # 이런 애들 norm 할려고 remove_invisible_chars를 추가함.
-    sentence = remove_invisible_chars(sentence)
+    # sentence = remove_invisible_chars(sentence)
     sentence = normalize("NFC", sentence)
     if "idiom" in sentence:
         # NOTE: idiom 어노테이션 개같이 되어 있어서 그냥 전부 필터링 함.
@@ -424,9 +424,9 @@ def wav2vec2_finetune_ctc_preprocessor(
             return_tensors="np",
         )
 
-        length = outputs["input_values"][0].shape[0]
+        length = get_feat_extract_output_lengths(outputs["input_values"][0].shape[0], config)
 
-        if len(sentence) > get_feat_extract_output_lengths(length, config):
+        if len(outputs["labels"][0]) > length:
             continue
 
         process_finish_ls.append(
