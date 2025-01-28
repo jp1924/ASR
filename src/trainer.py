@@ -96,6 +96,8 @@ class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
     num_negatives: int = 100
     return_tensors: str = "pt"
 
+    do_old_packing: bool = False
+
     def _process_packing_list(self, feature_ls):
         input_values_ls, position_ids_ls, mask_time_indices_ls = list(), list(), list()
         for packing_ls in feature_ls:
@@ -119,6 +121,45 @@ class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
         batch["position_ids"] = torch.concat(position_ids_ls)
         batch["mask_time_indices"] = torch.concat(mask_time_indices_ls, dim=-1)
         batch["sampled_negative_indices"] = None
+
+        return batch
+
+    def _process_old_packing_list(self, feature_ls):
+        batch_size = len(feature_ls)
+        input_values = list()
+        position_ids = np.zeros((batch_size, self.pack_max_seq)) - 1
+        attention_mask = np.zeros((batch_size, 1, self.pack_max_seq, self.pack_max_seq))
+        mask_time_indices = np.zeros((batch_size, self.pack_max_seq))
+        for batch_idx, packing_ls in enumerate(feature_ls):
+            start_idx = 0
+            for pack in packing_ls:
+                length = int(pack["length"])
+                end_idx = start_idx + length
+                mask_time_indices[batch_idx, start_idx:end_idx] = _compute_mask_indices(
+                    (1, length),
+                    self.mask_time_prob,
+                    self.mask_time_length,
+                    min_masks=self.mask_time_min_masks,
+                )
+                attention_mask[batch_idx, 0, start_idx:end_idx, start_idx:end_idx] = 1
+                position_ids[batch_idx, start_idx:end_idx] = np.arange(length)
+                start_idx = end_idx
+
+            input_values.append([pack["input_values"] for pack in packing_ls])
+
+        sampled_negative_indices = _sample_negative_indices(
+            mask_time_indices.shape,
+            self.num_negatives,
+            mask_time_indices=mask_time_indices,
+        )
+
+        batch = dict()
+        batch["input_values"] = input_values
+        batch["position_ids"] = torch.tensor(position_ids)
+        batch["attention_mask"] = torch.tensor(attention_mask)
+        batch["mask_time_indices"] = torch.tensor(mask_time_indices)
+        batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices)
+        batch["sub_attention_mask"] = torch.tensor(position_ids != -1, dtype=torch.long)
 
         return batch
 
@@ -168,7 +209,10 @@ class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
 
     def torch_call(self, feature_ls):
         if isinstance(feature_ls, list) and isinstance(feature_ls[0], list):
-            return self._process_packing_list(feature_ls)
+            if self.do_old_packing:
+                return self._process_old_packing_list(feature_ls)
+            else:
+                return self._process_packing_list(feature_ls)
         else:
             return self._process_feature_list(feature_ls)
 
@@ -177,8 +221,6 @@ class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
 class DataCollatorCTCWithPadding(DataCollatorMixin):
     processor: ProcessorMixin
     padding: Union[bool, str] = "longest"
-    pad_to_multiple_of: Optional[int] = None
-    pad_to_multiple_of_labels: Optional[int] = None
     return_tensors: str = "pt"
 
     def torch_call(self, features):
@@ -190,12 +232,12 @@ class DataCollatorCTCWithPadding(DataCollatorMixin):
             labels=label_features,
             padding=self.padding,
             return_attention_mask=True,
-            pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors=self.return_tensors,
         )
 
         # replace padding with -100 to ignore loss correctly
-        batch.labels[batch.labels == 0] = -100
+        pad_token_id = self.processor.tokenizer.pad_token_type_id
+        batch.labels[batch.labels == pad_token_id] = -100
         if hasattr(batch, "attention_mask"):
             batch["attention_mask"] = batch.attention_mask.to(torch.long)
 

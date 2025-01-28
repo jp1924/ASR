@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import optimization
 import torch
 from data_processor import wav2vec2_finetune_ctc_preprocessor
 from datasets import Dataset, concatenate_datasets, load_dataset
 from evaluate import load
-from optimization import NewSchedulerType, set_scheduler
 from setproctitle import setproctitle
 from trainer import DataCollatorCTCWithPadding
 
@@ -55,6 +55,10 @@ class DataPipelineArguments:
     )
     audio_column_name: str = field(
         default="audio",
+        metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'audio'"},
+    )
+    sentence_column_name: str = field(
+        default="sentence",
         metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'audio'"},
     )
 
@@ -103,20 +107,10 @@ class DataPipelineArguments:
 @dataclass
 class TrainPipelineArguments:
     # 이걸 해야 스케줄러가 정상적으로 적용됨.
-    lr_scheduler_type: Union[NewSchedulerType, str] = field(
-        default="linear",
-        metadata={"help": "The scheduler type to use."},
-    )
-    # model
-    model_name_or_path: str = field(
-        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models."}
-    )
 
-    pad_to_multiple_of: Optional[int] = field(
-        default=0,
-        metadata={
-            "help": "If set will pad the sequence to a multiple of the provided value. This is especially useful to enable the use of Tensor Cores on NVIDIA hardware with compute capability >= 7.5 (Volta)."
-        },
+    model_name_or_path: str = field(
+        default=None,
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models."},
     )
 
     attn_implementation: str = field(
@@ -227,8 +221,6 @@ class FinetuneCTCArguments(TrainingArguments, DataPipelineArguments, TrainPipeli
         self.cache_dir = Path(self.cache_dir) if self.cache_dir else None
         self.model_name_or_path = self.resume_from_checkpoint or self.model_name_or_path
 
-        set_scheduler()
-
     @property
     def is_local_process_zero(self) -> bool:
         return self.local_process_index == 0
@@ -334,7 +326,7 @@ def main(train_args: FinetuneCTCArguments) -> None:
                 batch_size=train_args.preprocessing_batch_size,
                 remove_columns=set(sum(datasets.column_names.values(), [])),
                 desc=f"preprocess-{repo_name}",
-                fn_kwargs={"processor": processor, "args": train_args},
+                fn_kwargs={"processor": processor, "args": train_args, "config": config},
             )
 
             for dataset_key in datasets:
@@ -392,10 +384,7 @@ def main(train_args: FinetuneCTCArguments) -> None:
             PROCESS_FUNC_MAP[train_args.data_preprocessor_type]
         )
 
-    collator = DataCollatorCTCWithPadding(
-        processor=processor,
-        pad_to_multiple_of=train_args.pad_to_multiple_of,
-    )
+    collator = DataCollatorCTCWithPadding(processor=processor)
 
     # set metrics
     wer_metric, cer_metric = load("wer"), load("cer")
