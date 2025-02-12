@@ -1,4 +1,6 @@
 import json
+import logging
+import sys
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -6,16 +8,18 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
-from data_processor import wav2vec2_pretrain_preprocessor
 from datasets import Dataset, concatenate_datasets, load_dataset
-from models import PackedWav2Vec2ForPreTraining
+from datasets import logging as ds_logging
 from setproctitle import setproctitle
-from trainer import ASRPreTrainer, DataPackingCollatorForWav2Vec2Pretraining
+from workspace.ASR.src.preprocessor import wav2vec2_pretrain_preprocessor
 
+from models import PackedWav2Vec2ConformerForPreTraining, PackedWav2Vec2ForPreTraining
+from trainer import ASRPreTrainer, DataPackingCollatorForWav2Vec2Pretraining
 from transformers import (
     HfArgumentParser,
     TrainingArguments,
     Wav2Vec2Config,
+    Wav2Vec2ConformerForPreTraining,
     Wav2Vec2Processor,
     set_seed,
 )
@@ -291,6 +295,17 @@ def main(train_args: PretrainArguments) -> None:
                 train_dataset_ls.append(dataset)
 
             if dataset_key in train_args.valid_dataset_prefix and train_args.do_eval:
+                # 너무 큰 데이터가 많아서 1000개 이하인 데이터들만 사용한다.
+                dataset = dataset.filter(
+                    lambda length_ls: [train_args.audio_min_seq <= length <= 1000 for length in length_ls],  # type: ignore
+                    num_proc=train_args.preprocessing_num_workers,
+                    input_columns=[train_args.length_column_name],
+                    cache_file_name=filter_cache_file_name[dataset_key],
+                    load_from_cache_file=True,
+                    batched=True,
+                    batch_size=train_args.preprocessing_batch_size,
+                    desc=f"length-filtering-{repo_name}/{dataset_key}",
+                )
                 valid_dataset_ls.append({f"{repo_name}-{dataset_key}": dataset})
 
             if dataset_key in train_args.test_dataset_prefix and train_args.do_predict:
@@ -354,7 +369,7 @@ def main(train_args: PretrainArguments) -> None:
                 batch_size=train_args.preprocessing_batch_size,
                 remove_columns=set(sum(datasets.column_names.values(), [])),
                 desc=f"preprocess-{repo_name}",
-                fn_kwargs={"processor": processor, "args": train_args},
+                fn_kwargs={"processor": processor, "args": train_args, "config": config},
             )
 
             for dataset_key in datasets:
@@ -373,7 +388,8 @@ def main(train_args: PretrainArguments) -> None:
     processor = Wav2Vec2Processor.from_pretrained(model_name_or_path, **train_args.processor_kwargs)
     config = Wav2Vec2Config.from_pretrained(model_name_or_path, **train_args.config_kwargs)
     model_kwargs = {"config": config, **train_args.model_kwargs}
-    model = PackedWav2Vec2ForPreTraining.from_pretrained(model_name_or_path, **model_kwargs)
+    # model = Wav2Vec2ConformerForPreTraining.from_pretrained(model_name_or_path, **model_kwargs)
+    model = PackedWav2Vec2ConformerForPreTraining.from_pretrained(model_name_or_path, **model_kwargs)
 
     if train_args.torch_compile:
         model = torch.compile(
@@ -402,6 +418,7 @@ def main(train_args: PretrainArguments) -> None:
         mask_time_length=config.mask_time_length,
         mask_time_min_masks=config.mask_time_min_masks,
         num_negatives=config.num_negatives,
+        do_old_packing=True,
     )
 
     # set trainer
@@ -460,5 +477,17 @@ if __name__ == "__main__":
 
     if train_args.run_name is not None:
         setproctitle(train_args.run_name)
+
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    log_level = train_args.get_process_log_level()
+    logger.setLevel(log_level)
+    ds_logging.set_verbosity(log_level)
+    hf_logging.set_verbosity(log_level)
+    hf_logging.enable_default_handler()
+    hf_logging.enable_explicit_format()
 
     main(train_args)
