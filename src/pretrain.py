@@ -11,9 +11,9 @@ import torch
 from datasets import Dataset, concatenate_datasets, load_dataset
 from datasets import logging as ds_logging
 from setproctitle import setproctitle
-from workspace.ASR.src.preprocessor import wav2vec2_pretrain_preprocessor
 
 from models import PackedWav2Vec2ConformerForPreTraining, PackedWav2Vec2ForPreTraining
+from preprocessor import PROCESSOR_REGISTRY
 from trainer import ASRPreTrainer, DataPackingCollatorForWav2Vec2Pretraining
 from transformers import (
     HfArgumentParser,
@@ -29,11 +29,6 @@ from transformers.trainer_utils import is_main_process
 
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
-
-
-PROCESS_FUNC_MAP = {
-    "wav2vec2_pretrain": wav2vec2_pretrain_preprocessor,
-}
 
 
 @dataclass
@@ -279,6 +274,9 @@ def main(train_args: PretrainArguments) -> None:
                         f"{repo_name}의 {dataset_key}크기는 {dataset_size}이지만 truncate_size는 {truncate_size} 크기를 조절하셈."
                     )
 
+            if train_args.is_world_process_zero:
+                range_histogram(dataset["length"], 100, 50)
+
             if dataset_key in train_args.train_dataset_prefix and train_args.do_train:
                 dataset = dataset.filter(
                     lambda length_ls: [
@@ -335,6 +333,46 @@ def main(train_args: PretrainArguments) -> None:
 
                 return return_dataset_dict
 
+        def range_histogram(data, num_bins=50, width=50):
+            # 데이터의 최대값과 최소값 찾기
+            min_val = min(data)
+            max_val = max(data)
+
+            # 구간 크기 계산
+            bin_size = (max_val - min_val) / num_bins
+
+            # 각 구간별 빈도수 계산
+            bins = [0] * num_bins
+            for value in data:
+                bin_index = min(int((value - min_val) / bin_size), num_bins - 1)
+                bins[bin_index] += 1
+
+            # 최대 빈도수 찾기
+            max_freq = max(bins)
+
+            # 히스토그램 출력
+            logger.info(f"\nHistogram (total {len(data)} items, {num_bins} bins)")
+            logger.info("-" * 80)
+            logger.info(f"Range{' ' * 18}Count  Distribution")
+            logger.info("-" * 80)
+
+            for i in range(num_bins):
+                start = min_val + (i * bin_size)
+                end = min_val + ((i + 1) * bin_size)
+                bar_length = int((bins[i] / max_freq) * width)
+                bar = "█" * bar_length
+
+                # 구간과 빈도수, 막대 출력
+                logger.info(f"{start:8.0f}-{end:8.0f}: {bins[i]:6d} |{bar}")
+
+            logger.info("-" * 80)
+            logger.info("\nStatistics:")
+            logger.info(f"데이터 개수: {len(data)}")
+            logger.info(f"최소값: {min_val:.0f}")
+            logger.info(f"최대값: {max_val:.0f}")
+            logger.info(f"평균값: {sum(data) / len(data):.2f}")
+            logger.info(f"구간 크기: {bin_size:.2f}")
+
         start_time = time.time()
         train_dataset_ls, valid_dataset_ls, test_dataset_ls = [], [], []
         for repo_name in train_args.dataset_repo_ls:
@@ -379,6 +417,16 @@ def main(train_args: PretrainArguments) -> None:
         valid_dataset = concat(valid_dataset_ls, "valid")
         test_dataset = concat(test_dataset_ls, "test")
 
+        if train_args.is_world_process_zero and train_dataset:
+            logger.info("train-datasets")
+            range_histogram(train_dataset["length"], 100, 50)
+        if train_args.is_world_process_zero and valid_dataset:
+            logger.info("valid-datasets")
+            range_histogram(valid_dataset["length"], 100, 50)
+        if train_args.is_world_process_zero and test_dataset:
+            logger.info("test-datasets")
+            range_histogram(test_dataset["length"], 100, 50)
+
         if train_args.is_world_process_zero:
             logger.info(f"load_dataset_time: {time.time() - start_time:.2f}")
 
@@ -406,7 +454,7 @@ def main(train_args: PretrainArguments) -> None:
     ):
         # load datasets
         train_dataset, valid_dataset, test_dataset = processing_datasets(
-            PROCESS_FUNC_MAP[train_args.data_preprocessor_type]
+            PROCESSOR_REGISTRY[train_args.data_preprocessor_type]
         )
 
     # set collator

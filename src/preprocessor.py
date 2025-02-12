@@ -443,3 +443,9 @@ def wav2vec2_finetune_ctc_preprocessor(
             return_dict.setdefault(key, []).append(value)
 
     return return_dict
+
+
+PROCESSOR_REGISTRY = {
+    "wav2vec2_pretrain": wav2vec2_pretrain_preprocessor,
+    "wav2vec2_finetune": wav2vec2_finetune_ctc_preprocessor,
+}
