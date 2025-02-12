@@ -104,11 +104,10 @@ class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
             for feature in packing_ls:
                 input_values = feature["input_values"]
                 length = self.model._get_feat_extract_output_lengths(len(input_values)).item()
-
                 mask_indices = _compute_mask_indices(
                     (1, length),
                     self.mask_time_prob,
-                    self.mask_time_length,
+                    self.mask_time_length if length > self.mask_time_length * 2 else 1,
                     min_masks=self.mask_time_min_masks,
                 )
 
@@ -130,22 +129,28 @@ class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
         position_ids = np.zeros((batch_size, self.pack_max_seq)) - 1
         attention_mask = np.zeros((batch_size, 1, self.pack_max_seq, self.pack_max_seq))
         mask_time_indices = np.zeros((batch_size, self.pack_max_seq))
+        input_lengths = list()
         for batch_idx, packing_ls in enumerate(feature_ls):
             start_idx = 0
+            input_length = list()
             for pack in packing_ls:
                 length = int(pack["length"])
                 end_idx = start_idx + length
                 mask_time_indices[batch_idx, start_idx:end_idx] = _compute_mask_indices(
                     (1, length),
                     self.mask_time_prob,
-                    self.mask_time_length,
+                    self.mask_time_length if length > self.mask_time_length * 2 else 1,
                     min_masks=self.mask_time_min_masks,
                 )
+
                 attention_mask[batch_idx, 0, start_idx:end_idx, start_idx:end_idx] = 1
                 position_ids[batch_idx, start_idx:end_idx] = np.arange(length)
                 start_idx = end_idx
 
+                input_length.append(length)
+
             input_values.append([pack["input_values"] for pack in packing_ls])
+            input_lengths.append(input_length)
 
         sampled_negative_indices = _sample_negative_indices(
             mask_time_indices.shape,
@@ -156,8 +161,9 @@ class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
         batch = dict()
         batch["input_values"] = input_values
         batch["position_ids"] = torch.tensor(position_ids)
-        batch["attention_mask"] = torch.tensor(attention_mask)
+        # batch["attention_mask"] = torch.tensor(attention_mask)
         batch["mask_time_indices"] = torch.tensor(mask_time_indices)
+        batch["input_lengths"] = input_lengths
         batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices)
         batch["sub_attention_mask"] = torch.tensor(position_ids != -1, dtype=torch.long)
 
@@ -204,6 +210,16 @@ class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
         )
         batch["mask_time_indices"] = torch.tensor(mask_time_indices, dtype=torch.long, device=device)
         batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices, dtype=torch.long, device=device)
+
+        if self.model.base_model_prefix == "wav2vec2_conformer":
+            position_mask = self.model._get_feature_vector_attention_mask(
+                mask_indices_seq_length,
+                batch.attention_mask,
+            )
+            position_ids = torch.arange(0, position_mask.shape[-1]) * torch.ones(position_mask.shape).to(torch.long)
+            position_ids[~position_mask] = -1
+            batch["position_ids"] = position_ids
+            del batch["attention_mask"]
 
         return batch.to(self.model.dtype)
 
