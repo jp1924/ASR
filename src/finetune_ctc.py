@@ -10,7 +10,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import optimization
 import torch
-from data_processor import wav2vec2_finetune_ctc_preprocessor
+from workspace.ASR.src.preprocessor import wav2vec2_finetune_ctc_preprocessor
 from datasets import Dataset, concatenate_datasets, load_dataset
 from evaluate import load
 from setproctitle import setproctitle
@@ -19,7 +19,9 @@ from trainer import DataCollatorCTCWithPadding
 from transformers import (
     AutoConfig,
     AutoModelForCTC,
+    GPT2DoubleHeadsModel,
     HfArgumentParser,
+    LlamaForCausalLM,
     Trainer,
     TrainingArguments,
     Wav2Vec2Processor,
@@ -272,10 +274,10 @@ def main(train_args: FinetuneCTCArguments) -> None:
                 train_dataset_ls.append(dataset)
 
             if dataset_key in train_args.valid_dataset_prefix and train_args.do_eval:
-                valid_dataset_ls.append(dataset)
+                valid_dataset_ls.append({f"{repo_name}-{dataset_key}": dataset})
 
             if dataset_key in train_args.test_dataset_prefix and train_args.do_predict:
-                test_dataset_ls.append(dataset)
+                test_dataset_ls.append({f"{repo_name}-{dataset_key}": dataset})
 
             if train_args.is_world_process_zero:
                 length_ls = sorted(dataset[train_args.length_column_name], reverse=True)[:100]
@@ -283,14 +285,23 @@ def main(train_args: FinetuneCTCArguments) -> None:
                 logger.info(f"{repo_name}/{dataset_key}-length: {length_ls}")
                 logger.info(f"{repo_name}/{dataset_key}-size: {original_size} -> {len(dataset)}")
 
-        def concat(datasets_ls: List[Dataset], dataset_type: str) -> Optional[Dataset]:
-            if datasets_ls:
+        def concat(datasets_ls: List[Union[Dataset, Dict[str, Dataset]]], dataset_type: str) -> Optional[Dataset]:
+            if not datasets_ls:
+                return None
+            elif isinstance(datasets_ls[0], Dataset):
                 dataset = concatenate_datasets(datasets_ls)
                 dataset.set_format("pt")
                 if train_args.is_world_process_zero:
                     logger.info(f"{dataset_type}_dataset:\n{dataset}")
                 return dataset
-            return None
+            elif isinstance(datasets_ls[0], dict):
+                return_dataset_dict = dict()
+
+                for dataset_dict in datasets_ls:
+                    [x.set_format("pt") for x in dataset_dict.values()]
+                    return_dataset_dict.update(dataset_dict)
+
+                return return_dataset_dict
 
         start_time = time.time()
         train_dataset_ls, valid_dataset_ls, test_dataset_ls = [], [], []
