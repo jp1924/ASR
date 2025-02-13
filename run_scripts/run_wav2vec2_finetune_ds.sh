@@ -11,14 +11,14 @@ export OMP_NUM_THREADS=2
 
 deepspeed --include=localhost:0,1,2,3 --master_port=3218 \
     '/root/workspace/src/finetune_ctc.py' \
-    --output_dir="/root/output_dir/wav2vec2/ksponspeech/pack" \
+    --output_dir="/root/output_dir/wav2vec2/ksponspeech/finetune/" \
     --cache_dir="/root/.cache/.[KoWav2Vec2Base]preprocessor/finetune" \
-    --model_name_or_path="/root/output_dir/wav2vec2/ksponspeech/fix-pack-2/checkpoint-11811" \
-    --run_name="wav2vec2-base" \
+    --model_name_or_path="/root/output_dir/wav2vec2/ksponspeech/fix-pack-1/checkpoint-2217" \
+    --run_name="test" \
     --data_preprocessor_type="wav2vec2_finetune_ctc" \
     --audio_min_seq=1 \
     --audio_max_seq=512 \
-    --per_device_train_batch_size=32 \
+    --per_device_train_batch_size=64 \
     --gradient_accumulation_steps=1 \
     --per_device_eval_batch_size=2 \
     --eval_accumulation_steps=1 \
