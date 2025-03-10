@@ -10,16 +10,15 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import torch
 from datasets import Dataset, concatenate_datasets, load_dataset
 from datasets import logging as ds_logging
+from setproctitle import setproctitle
+
 from models import PackedWav2Vec2ConformerForPreTraining, PackedWav2Vec2ForPreTraining
 from preprocessor import PROCESSOR_REGISTRY
-from setproctitle import setproctitle
 from trainer import ASRPreTrainer, DataPackingCollatorForWav2Vec2Pretraining
-
 from transformers import (
     HfArgumentParser,
     TrainingArguments,
     Wav2Vec2Config,
-    Wav2Vec2ConformerForPreTraining,
     Wav2Vec2Processor,
     set_seed,
 )
@@ -27,6 +26,7 @@ from transformers import logging as hf_logging
 from transformers.trainer_utils import is_main_process
 
 
+hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
 
 
@@ -422,18 +422,12 @@ def main(train_args: PretrainArguments) -> None:
         if train_args.is_world_process_zero and valid_dataset:
             logger.info("valid-datasets")
             if isinstance(valid_dataset, dict):
-                for key in valid_dataset:
-                    range_histogram(valid_dataset[key]["length"], 100, 50)
-            else:
-                range_histogram(valid_dataset["length"], 100, 50)
-
+                for key, value in valid_dataset.items():
+                    range_histogram(value["length"], 100, 50)
+            range_histogram(valid_dataset["length"], 100, 50)
         if train_args.is_world_process_zero and test_dataset:
             logger.info("test-datasets")
-            if isinstance(test_dataset, dict):
-                for key in test_dataset:
-                    range_histogram(test_dataset[key]["length"], 100, 50)
-            else:
-                range_histogram(test_dataset["length"], 100, 50)
+            range_histogram(test_dataset["length"], 100, 50)
 
         if train_args.is_world_process_zero:
             logger.info(f"load_dataset_time: {time.time() - start_time:.2f}")
@@ -505,13 +499,8 @@ def train(trainer: ASRPreTrainer, args: PretrainArguments) -> None:
     context = trainer.accelerator.profile(ProfileKwargs(**args.profile_kwargs)) if args.profiling else nullcontext()
 
     with context as prof:
-        try:
-            trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
-        finally:
-            try:
-                trainer._save_checkpoint(trainer.model, None)
-            except BaseException:
-                pass
+        trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+
     save_path = Path(args.output_dir)
     if prof:
         prof.export_memory_timeline(save_path.with_suffix(".memory_trace.json").as_posix())
@@ -537,7 +526,7 @@ if __name__ == "__main__":
         set_seed(train_args.seed)
 
     if train_args.run_name is not None:
-        setproctitle(train_args.run_name)
+        setproctitle(f"{train_args.run_name}-{train_args.local_process_index}")
 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
