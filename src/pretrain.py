@@ -424,10 +424,15 @@ def main(train_args: PretrainArguments) -> None:
             if isinstance(valid_dataset, dict):
                 for key, value in valid_dataset.items():
                     range_histogram(value["length"], 100, 50)
-            range_histogram(valid_dataset["length"], 100, 50)
+            else:
+                range_histogram(valid_dataset["length"], 100, 50)
         if train_args.is_world_process_zero and test_dataset:
             logger.info("test-datasets")
-            range_histogram(test_dataset["length"], 100, 50)
+            if isinstance(valid_dataset, dict):
+                for key, value in valid_dataset.items():
+                    range_histogram(value["length"], 100, 50)
+            else:
+                range_histogram(valid_dataset["length"], 100, 50)
 
         if train_args.is_world_process_zero:
             logger.info(f"load_dataset_time: {time.time() - start_time:.2f}")
@@ -439,7 +444,7 @@ def main(train_args: PretrainArguments) -> None:
     config = Wav2Vec2Config.from_pretrained(model_name_or_path, **train_args.config_kwargs)
     model_kwargs = {"config": config, **train_args.model_kwargs}
     # model = Wav2Vec2ConformerForPreTraining.from_pretrained(model_name_or_path, **model_kwargs)
-    model = PackedWav2Vec2ConformerForPreTraining.from_pretrained(model_name_or_path, **model_kwargs)
+    model = PackedWav2Vec2ForPreTraining.from_pretrained(model_name_or_path, **model_kwargs)
 
     if train_args.torch_compile:
         model = torch.compile(
