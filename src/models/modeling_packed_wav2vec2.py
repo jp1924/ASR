@@ -579,10 +579,8 @@ class PackedWav2Vec2Model(Wav2Vec2PreTrainedModel):
     )
     def forward(
         self,
-        input_values: Optional[torch.Tensor] = None,
+        input_values: Union[List[torch.Tensor], torch.Tensor],
         position_ids: Optional[torch.Tensor] = None,
-        hidden_states: Optional[torch.Tensor] = None,
-        extract_features: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         mask_time_indices: Optional[torch.BoolTensor] = None,
         output_attentions: Optional[bool] = None,
@@ -595,21 +593,72 @@ class PackedWav2Vec2Model(Wav2Vec2PreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        if extract_features is None:
+        batch_input_length = None
+        if isinstance(input_values, torch.Tensor):
             extract_features = self.feature_extractor(input_values)
             extract_features = extract_features.transpose(1, 2)
 
-        if attention_mask is not None:
-            # compute reduced attention_mask corresponding to feature vectors
-            attention_mask = self._get_feature_vector_attention_mask(
-                extract_features.shape[1], attention_mask, add_adapter=False
-            )
+            if attention_mask is not None:
+                # compute reduced attention_mask corresponding to feature vectors
+                attention_mask = self._get_feature_vector_attention_mask(
+                    extract_features.shape[1], attention_mask, add_adapter=False
+                )
 
-        if hidden_states is None:
             hidden_states, extract_features = self.feature_projection(extract_features)
             hidden_states = self._mask_hidden_states(
                 hidden_states, mask_time_indices=mask_time_indices, attention_mask=attention_mask
             )
+        elif isinstance(input_values, list):
+            batch_input_length = list()
+            pack_size = mask_time_indices.shape[-1]
+            hidden_states_ls, extract_features_ls = list(), list()
+            for batch_idx, packing_ls in enumerate(input_values):
+                start_idx = 0
+
+                input_lengths = list()
+                hidden_states = list()
+                extract_features = list()
+                for input_value in packing_ls:
+                    extract_feature = self.feature_extractor(input_value[None])
+                    extract_feature = extract_feature.transpose(1, 2)
+
+                    end_idx = extract_feature.shape[1] + start_idx
+
+                    mask_time = mask_time_indices[batch_idx, start_idx:end_idx][None]
+
+                    hidden_state, extract_feature = self.feature_projection(extract_feature)
+                    hidden_state = self._mask_hidden_states(hidden_state, mask_time)
+
+                    # positional encoding
+                    # position_embeddings = self.encoder.pos_conv_embed(hidden_state)
+                    # hidden_state = hidden_state + position_embeddings
+                    hidden_state = self.encoder.dropout(hidden_state)
+
+                    hidden_states.append(hidden_state)
+                    extract_features.append(extract_feature)
+
+                    start_idx = end_idx
+                    input_lengths.append(extract_feature.shape[1])
+
+                hidden_states = torch.concat(hidden_states, dim=1)
+                extract_features = torch.concat(extract_features, dim=1)
+
+                bsz, seq, hdn = hidden_states.shape
+                pad = torch.zeros((bsz, pack_size - seq, hdn), device=self.device, dtype=self.dtype)
+                hidden_states = torch.concat([hidden_states, pad], dim=1)
+
+                bsz, seq, hdn = extract_features.shape
+                pad = torch.zeros((bsz, pack_size - seq, hdn), device=self.device, dtype=self.dtype)
+                extract_features = torch.concat([extract_features, pad], dim=1)
+
+                hidden_states_ls.append(hidden_states)
+                extract_features_ls.append(extract_features)
+                batch_input_length.append(input_lengths)
+
+            hidden_states = torch.concat(hidden_states_ls, dim=0)
+            extract_features = torch.concat(extract_features_ls, dim=0)
+        else:
+            raise ValueError("input_values must be either a tensor or a list of tensors")
 
         encoder_outputs = self.encoder(
             hidden_states,
@@ -626,14 +675,14 @@ class PackedWav2Vec2Model(Wav2Vec2PreTrainedModel):
             hidden_states = self.adapter(hidden_states)
 
         if not return_dict:
-            return (hidden_states, extract_features) + encoder_outputs[1:]
+            return ((hidden_states, extract_features) + encoder_outputs[1:], batch_input_length)
 
         return Wav2Vec2BaseModelOutput(
             last_hidden_state=hidden_states,
             extract_features=extract_features,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
-        )
+        ), batch_input_length
 
 
 class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
@@ -771,49 +820,9 @@ class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
         if mask_time_indices is not None:
             mask_time_indices = mask_time_indices.to(torch.bool)
 
-        input_lengths, hidden_states, extract_features = None, None, None
-        if isinstance(input_values, list):
-            start_idx, end_idx = 0, 0
-            extract_features_ls, hidden_state_ls, input_lengths = list(), list(), list()
-            for input_value in input_values:
-                input_value = input_value[None].to(self.dtype).to(self.device)
-                extract_feature = self.wav2vec2.feature_extractor(input_value)
-                extract_feature = extract_feature.transpose(1, 2)
-                hidden_state, extract_feature = self.wav2vec2.feature_projection(extract_feature)
-
-                length = extract_feature.shape[1]
-
-                end_idx += length
-
-                hidden_state = self.wav2vec2._mask_hidden_states(
-                    hidden_state,
-                    mask_time_indices=mask_time_indices[0, start_idx:end_idx][None],
-                )
-                position_embeddings = self.wav2vec2.encoder.pos_conv_embed(hidden_state)
-                hidden_state = hidden_state + position_embeddings
-                hidden_state = self.wav2vec2.encoder.dropout(hidden_state)
-
-                start_idx = end_idx
-                hidden_state_ls.append(hidden_state)
-                extract_features_ls.append(extract_feature)
-                input_lengths.append(length)
-
-            sampled_negative_indices = _sample_negative_indices(
-                mask_time_indices.shape,
-                self.config.num_negatives,
-                mask_time_indices.cpu().numpy(),
-            )
-
-            sampled_negative_indices = torch.tensor(sampled_negative_indices)
-
-            extract_features = torch.cat(extract_features_ls, dim=1)
-            hidden_states = torch.cat(hidden_state_ls, dim=1)
-
-        outputs = self.wav2vec2(
+        outputs, input_lengths_ls = self.wav2vec2(
             input_values,
-            hidden_states=hidden_states,
             position_ids=position_ids,
-            extract_features=extract_features,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
@@ -833,14 +842,50 @@ class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
                 extract_features.shape[1], attention_mask, add_adapter=False
             )
 
-        loss, contrastive_loss, diversity_loss = None, None, None
-        quantized_features, codevector_perplexity = self.quantizer(
-            extract_features,
-            mask_time_indices=mask_time_indices,
-        )
+        if input_lengths_ls:
+            pack_size = mask_time_indices.shape[1]
+            batch_quantized_features = list()
+            codevector_perplexity = torch.tensor(0, device=self.device, dtype=self.dtype)
+            for bsz_idx, (input_lengths, position_id_ls) in enumerate(zip(input_lengths_ls, position_ids)):
+                split_extract_features = extract_features[bsz_idx, position_id_ls != -1].split(input_lengths)
+                quantized_features_ls = list()
+                start_idx = 0
+                for extract_feature in split_extract_features:
+                    end_idx = extract_feature.shape[0] + start_idx
+
+                    mask_time_indice = mask_time_indices[bsz_idx, start_idx:end_idx][None]
+
+                    quantized_feature, perplexity = self.quantizer(
+                        extract_feature[None],
+                        mask_time_indices=mask_time_indice,
+                    )
+
+                    start_idx = end_idx
+
+                    codevector_perplexity += perplexity
+                    quantized_features_ls.append(quantized_feature)
+
+                quantized_features = torch.concat(quantized_features_ls, dim=1)
+
+                bsz, seq, hdn = quantized_features.shape
+                pad = torch.zeros((bsz, pack_size - seq, hdn), device=self.device, dtype=self.dtype)
+                quantized_features = torch.concat([quantized_features, pad], dim=1)
+
+                batch_quantized_features.append(quantized_features)
+
+            codevector_perplexity = codevector_perplexity / extract_features.shape[0]
+            quantized_features = torch.concat(batch_quantized_features, dim=0)
+        else:
+            quantized_features, codevector_perplexity = self.quantizer(
+                extract_features,
+                mask_time_indices=mask_time_indices,
+            )
+        # if bool(torch.isinf(perplexity)) or bool(torch.isnan(codevector_perplexity)):
+        #     breakpoint()
         quantized_features = quantized_features.to(self.project_q.weight.dtype)
         quantized_features = self.project_q(quantized_features)
 
+        loss, contrastive_loss, diversity_loss = None, None, None
         if sampled_negative_indices is not None:
             batch_size, sequence_length, hidden_size = quantized_features.shape
 
@@ -913,7 +958,13 @@ class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
         if not hasattr(self, "warnings_issued"):
             self.warnings_issued = {}
         if self.main_input_name in input_dict and isinstance(input_dict[self.main_input_name], list):
-            return sum([self._get_feat_extract_output_lengths(x.shape[0]) for x in input_dict[self.main_input_name]])
+            return sum(
+                [
+                    self._get_feat_extract_output_lengths(x.shape[0])
+                    for y in input_dict[self.main_input_name]
+                    for x in y
+                ]
+            )  # noqa
         elif self.main_input_name in input_dict and isinstance(input_dict[self.main_input_name], torch.Tensor):
             return input_dict[self.main_input_name].numel()
         elif "estimate_tokens" not in self.warnings_issued:
