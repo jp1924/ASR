@@ -1,10 +1,12 @@
 import math
 import re
-from typing import Callable, Literal, Optional
+import time
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 from unicodedata import normalize
 
 import librosa
 import numpy as np
+from datasets import Dataset, concatenate_datasets, load_dataset
 
 # from kss import Kss
 from transformers import PretrainedConfig, ProcessorMixin, TrainingArguments
@@ -98,7 +100,7 @@ def normal_dual_transcript_extractor(
 
         if not normal_dual_bracket_regex.search(transcript_section):
             raise ValueError(
-                "이중 전사 구문을 추출하는 과정에서 값이 이상하게 바뀌었습니다." f"sentence: {transcript_section}"
+                f"이중 전사 구문을 추출하는 과정에서 값이 이상하게 바뀌었습니다.sentence: {transcript_section}"
             )
 
         extract_groups = transcript_norm(groups[select_side]) if transcript_norm else groups[select_side]
@@ -136,7 +138,7 @@ def unnormal_dual_transcript_extractor(
 
         if not unnormal_dual_bracket_regex.search(transcript_section):
             raise ValueError(
-                "이중 전사 구문을 추출하는 과정에서 값이 이상하게 바뀌었습니다." f"sentence: {transcript_section}"
+                f"이중 전사 구문을 추출하는 과정에서 값이 이상하게 바뀌었습니다.sentence: {transcript_section}"
             )
 
         extract_groups = transcript_norm(groups[select_side]) if transcript_norm else groups[select_side]
@@ -447,5 +449,195 @@ def wav2vec2_finetune_ctc_preprocessor(
 
 PROCESSOR_REGISTRY = {
     "wav2vec2_pretrain": wav2vec2_pretrain_preprocessor,
-    "wav2vec2_finetune": wav2vec2_finetune_ctc_preprocessor,
+    "wav2vec2_finetune_ctc": wav2vec2_finetune_ctc_preprocessor,
 }
+
+
+def processing_datasets(
+    func: Callable,
+    train_args: TrainingArguments,
+    processor: ProcessorMixin,
+    config: PretrainedConfig,
+) -> Tuple[Optional[Dataset], Optional[Dataset], Optional[Dataset]]:
+    def process_dataset(
+        dataset: Dataset,
+        dataset_key: str,
+        repo_name: str,
+        truncate_map: dict,
+        filter_cache_file_name: str,
+    ) -> None:
+        original_size = len(dataset)
+        if dataset_key in truncate_map:
+            truncate_size = truncate_map[dataset_key]
+            dataset_size = len(dataset)
+            dataset = dataset if dataset_size <= truncate_size else dataset.shuffle().select(range(truncate_size))
+            if dataset_size <= truncate_size and train_args.is_world_process_zero:
+                logger.info(
+                    f"{repo_name}의 {dataset_key}크기는 {dataset_size}이지만 truncate_size는 {truncate_size} 크기를 조절하셈."
+                )
+
+        if train_args.is_world_process_zero:
+            range_histogram(dataset["length"], 100, 50)
+
+        if dataset_key in train_args.train_dataset_prefix and train_args.do_train:
+            dataset = dataset.filter(
+                lambda length_ls: [
+                    train_args.audio_min_seq <= length <= train_args.audio_max_seq for length in length_ls
+                ],  # type: ignore
+                num_proc=train_args.preprocessing_num_workers,
+                input_columns=[train_args.length_column_name],
+                cache_file_name=filter_cache_file_name[dataset_key],
+                load_from_cache_file=True,
+                batched=True,
+                batch_size=train_args.preprocessing_batch_size,
+                desc=f"length-filtering-{repo_name}/{dataset_key}",
+            )
+            train_dataset_ls.append(dataset)
+
+        if dataset_key in train_args.valid_dataset_prefix and train_args.do_eval:
+            # 너무 큰 데이터가 많아서 1000개 이하인 데이터들만 사용한다.
+            dataset = dataset.filter(
+                lambda length_ls: [train_args.audio_min_seq <= length <= 1000 for length in length_ls],  # type: ignore
+                num_proc=train_args.preprocessing_num_workers,
+                input_columns=[train_args.length_column_name],
+                cache_file_name=filter_cache_file_name[dataset_key],
+                load_from_cache_file=True,
+                batched=True,
+                batch_size=train_args.preprocessing_batch_size,
+                desc=f"length-filtering-{repo_name}/{dataset_key}",
+            )
+            valid_dataset_ls.append({f"{repo_name}-{dataset_key}": dataset})
+
+        if dataset_key in train_args.test_dataset_prefix and train_args.do_predict:
+            test_dataset_ls.append({f"{repo_name}-{dataset_key}": dataset})
+
+        if train_args.is_world_process_zero:
+            length_ls = sorted(dataset[train_args.length_column_name], reverse=True)[:100]
+            length_ls = [int(length) for length in length_ls]
+            logger.info(f"{repo_name}/{dataset_key}-length: {length_ls}")
+            logger.info(f"{repo_name}/{dataset_key}-size: {original_size} -> {len(dataset)}")
+
+    def concat(datasets_ls: List[Union[Dataset, Dict[str, Dataset]]], dataset_type: str) -> Optional[Dataset]:
+        if not datasets_ls:
+            return None
+        elif isinstance(datasets_ls[0], Dataset):
+            dataset = concatenate_datasets(datasets_ls)
+            dataset.set_format("pt")
+            if train_args.is_world_process_zero:
+                logger.info(f"{dataset_type}_dataset:\n{dataset}")
+            return dataset
+        elif isinstance(datasets_ls[0], dict):
+            return_dataset_dict = dict()
+
+            for dataset_dict in datasets_ls:
+                [x.set_format("pt") for x in dataset_dict.values()]
+                return_dataset_dict.update(dataset_dict)
+
+            return return_dataset_dict
+
+    def range_histogram(data, num_bins=50, width=50):
+        # 데이터의 최대값과 최소값 찾기
+        min_val = min(data)
+        max_val = max(data)
+
+        # 구간 크기 계산
+        bin_size = (max_val - min_val) / num_bins
+
+        # 각 구간별 빈도수 계산
+        bins = [0] * num_bins
+        for value in data:
+            bin_index = min(int((value - min_val) / bin_size), num_bins - 1)
+            bins[bin_index] += 1
+
+        # 최대 빈도수 찾기
+        max_freq = max(bins)
+
+        # 히스토그램 출력
+        logger.info(f"\nHistogram (total {len(data)} items, {num_bins} bins)")
+        logger.info("-" * 80)
+        logger.info(f"Range{' ' * 18}Count  Distribution")
+        logger.info("-" * 80)
+
+        for i in range(num_bins):
+            start = min_val + (i * bin_size)
+            end = min_val + ((i + 1) * bin_size)
+            bar_length = int((bins[i] / max_freq) * width)
+            bar = "█" * bar_length
+
+            # 구간과 빈도수, 막대 출력
+            logger.info(f"{start:8.0f}-{end:8.0f}: {bins[i]:6d} |{bar}")
+
+        logger.info("-" * 80)
+        logger.info("\nStatistics:")
+        logger.info(f"데이터 개수: {len(data)}")
+        logger.info(f"최소값: {min_val:.0f}")
+        logger.info(f"최대값: {max_val:.0f}")
+        logger.info(f"평균값: {sum(data) / len(data):.2f}")
+        logger.info(f"구간 크기: {bin_size:.2f}")
+
+    start_time = time.time()
+    train_dataset_ls, valid_dataset_ls, test_dataset_ls = [], [], []
+    for repo_name in train_args.dataset_repo_ls:
+        if train_args.is_world_process_zero:
+            logger.info(f"load-{repo_name}")
+
+        data_name = train_args.data_name_map.get(repo_name, None)
+        truncate_map = train_args.data_truncate_map.get(repo_name, {})
+        datasets = load_dataset(repo_name, data_name)
+
+        map_cache_file_name, filter_cache_file_name = None, None
+        if train_args.cache_dir is not None:
+            name = repo_name.split("/")[-1]
+            name = f"{name}-{data_name}" if data_name else name
+
+            map_cache_file_name = {
+                x: train_args.cache_dir.joinpath(f"map_{name}-{x}_preprocessor.arrow").as_posix() for x in datasets
+            }
+            filter_cache_file_name = {
+                x: train_args.cache_dir.joinpath(
+                    f"filter_{f'{truncate_map[x]}-' if x in truncate_map else ''}{train_args.audio_min_seq}-{train_args.audio_max_seq}_{name}-{x}_preprocessor.arrow"
+                ).as_posix()
+                for x in datasets
+            }
+
+        datasets = datasets.map(
+            func,
+            num_proc=train_args.preprocessing_num_workers,
+            load_from_cache_file=True,
+            batched=True,
+            cache_file_names=map_cache_file_name,
+            batch_size=train_args.preprocessing_batch_size,
+            remove_columns=set(sum(datasets.column_names.values(), [])),
+            desc=f"preprocess-{repo_name}",
+            fn_kwargs={"processor": processor, "args": train_args, "config": config},
+        )
+
+        for dataset_key in datasets:
+            process_dataset(datasets[dataset_key], dataset_key, repo_name, truncate_map, filter_cache_file_name)
+
+    train_dataset = concat(train_dataset_ls, "train")
+    valid_dataset = concat(valid_dataset_ls, "valid")
+    test_dataset = concat(test_dataset_ls, "test")
+
+    if train_args.is_world_process_zero and train_dataset:
+        logger.info("train-datasets")
+        range_histogram(train_dataset["length"], 100, 50)
+    if train_args.is_world_process_zero and valid_dataset:
+        logger.info("valid-datasets")
+        if isinstance(valid_dataset, dict):
+            for key, value in valid_dataset.items():
+                range_histogram(value["length"], 100, 50)
+        else:
+            range_histogram(valid_dataset["length"], 100, 50)
+    if train_args.is_world_process_zero and test_dataset:
+        logger.info("test-datasets")
+        if isinstance(valid_dataset, dict):
+            for key, value in valid_dataset.items():
+                range_histogram(value["length"], 100, 50)
+        else:
+            range_histogram(valid_dataset["length"], 100, 50)
+
+    if train_args.is_world_process_zero:
+        logger.info(f"load_dataset_time: {time.time() - start_time:.2f}")
+
+    return train_dataset, valid_dataset, test_dataset

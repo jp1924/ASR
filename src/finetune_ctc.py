@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import sys
 import time
 import unicodedata
 from contextlib import nullcontext
@@ -8,22 +10,22 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-import optimization
 import torch
-from workspace.ASR.src.preprocessor import wav2vec2_finetune_ctc_preprocessor
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset
+from datasets import logging as ds_logging
 from evaluate import load
 from setproctitle import setproctitle
-from trainer import DataCollatorCTCWithPadding
 
+import optimization
+from preprocessor import PROCESSOR_REGISTRY, processing_datasets
+from trainer import DataCollatorCTCWithPadding
 from transformers import (
     AutoConfig,
     AutoModelForCTC,
-    GPT2DoubleHeadsModel,
     HfArgumentParser,
-    LlamaForCausalLM,
     Trainer,
     TrainingArguments,
+    Wav2Vec2ConformerForCTC,
     Wav2Vec2Processor,
     set_seed,
 )
@@ -33,11 +35,6 @@ from transformers.trainer_utils import EvalPrediction, is_main_process
 
 hf_logging.set_verbosity_info()
 logger = hf_logging.get_logger("transformers")
-
-
-PROCESS_FUNC_MAP = {
-    "wav2vec2_finetune_ctc": wav2vec2_finetune_ctc_preprocessor,
-}
 
 
 @dataclass
@@ -150,10 +147,7 @@ class TrainPipelineArguments:
 
 @dataclass
 class FinetuneCTCArguments(TrainingArguments, DataPipelineArguments, TrainPipelineArguments):
-    output_dir: str = field(
-        default=None,
-        metadata={"help": "The output directory where the model predictions and checkpoints will be written."},
-    )
+    lr_scheduler_type: Union[optimization.NewSchedulerType, str] = field(default="linear")
 
     def __post_init__(self):
         super().__post_init__()
@@ -240,118 +234,6 @@ class FinetuneCTCArguments(TrainingArguments, DataPipelineArguments, TrainPipeli
 
 
 def main(train_args: FinetuneCTCArguments) -> None:
-    def processing_datasets(func: Callable) -> Tuple[Optional[Dataset], Optional[Dataset], Optional[Dataset]]:
-        def process_dataset(
-            dataset: Dataset,
-            dataset_key: str,
-            repo_name: str,
-            truncate_map: dict,
-            filter_cache_file_name: str,
-        ) -> None:
-            original_size = len(dataset)
-            if dataset_key in truncate_map:
-                truncate_size = truncate_map[dataset_key]
-                dataset_size = len(dataset)
-                dataset = dataset if dataset_size <= truncate_size else dataset.shuffle().select(range(truncate_size))
-                if dataset_size <= truncate_size and train_args.is_world_process_zero:
-                    logger.info(
-                        f"{repo_name}의 {dataset_key}크기는 {dataset_size}이지만 truncate_size는 {truncate_size} 크기를 조절하셈."
-                    )
-
-            if dataset_key in train_args.train_dataset_prefix and train_args.do_train:
-                dataset = dataset.filter(
-                    lambda length_ls: [
-                        train_args.audio_min_seq <= length <= train_args.audio_max_seq for length in length_ls
-                    ],  # type: ignore
-                    num_proc=train_args.preprocessing_num_workers,
-                    input_columns=[train_args.length_column_name],
-                    cache_file_name=filter_cache_file_name[dataset_key],
-                    load_from_cache_file=True,
-                    batched=True,
-                    batch_size=train_args.preprocessing_batch_size,
-                    desc=f"length-filtering-{repo_name}/{dataset_key}",
-                )
-                train_dataset_ls.append(dataset)
-
-            if dataset_key in train_args.valid_dataset_prefix and train_args.do_eval:
-                valid_dataset_ls.append({f"{repo_name}-{dataset_key}": dataset})
-
-            if dataset_key in train_args.test_dataset_prefix and train_args.do_predict:
-                test_dataset_ls.append({f"{repo_name}-{dataset_key}": dataset})
-
-            if train_args.is_world_process_zero:
-                length_ls = sorted(dataset[train_args.length_column_name], reverse=True)[:100]
-                length_ls = [int(length) for length in length_ls]
-                logger.info(f"{repo_name}/{dataset_key}-length: {length_ls}")
-                logger.info(f"{repo_name}/{dataset_key}-size: {original_size} -> {len(dataset)}")
-
-        def concat(datasets_ls: List[Union[Dataset, Dict[str, Dataset]]], dataset_type: str) -> Optional[Dataset]:
-            if not datasets_ls:
-                return None
-            elif isinstance(datasets_ls[0], Dataset):
-                dataset = concatenate_datasets(datasets_ls)
-                dataset.set_format("pt")
-                if train_args.is_world_process_zero:
-                    logger.info(f"{dataset_type}_dataset:\n{dataset}")
-                return dataset
-            elif isinstance(datasets_ls[0], dict):
-                return_dataset_dict = dict()
-
-                for dataset_dict in datasets_ls:
-                    [x.set_format("pt") for x in dataset_dict.values()]
-                    return_dataset_dict.update(dataset_dict)
-
-                return return_dataset_dict
-
-        start_time = time.time()
-        train_dataset_ls, valid_dataset_ls, test_dataset_ls = [], [], []
-        for repo_name in train_args.dataset_repo_ls:
-            if train_args.is_world_process_zero:
-                logger.info(f"load-{repo_name}")
-
-            data_name = train_args.data_name_map.get(repo_name, None)
-            truncate_map = train_args.data_truncate_map.get(repo_name, {})
-            datasets = load_dataset(repo_name, data_name)
-
-            map_cache_file_name, filter_cache_file_name = None, None
-            if train_args.cache_dir is not None:
-                name = repo_name.split("/")[-1]
-                name = f"{name}-{data_name}" if data_name else name
-
-                map_cache_file_name = {
-                    x: train_args.cache_dir.joinpath(f"map_{name}-{x}_preprocessor.arrow").as_posix() for x in datasets
-                }
-                filter_cache_file_name = {
-                    x: train_args.cache_dir.joinpath(
-                        f"filter_{f'{truncate_map[x]}-' if x in truncate_map else ''}{train_args.audio_min_seq}-{train_args.audio_max_seq}_{name}-{x}_preprocessor.arrow"
-                    ).as_posix()
-                    for x in datasets
-                }
-
-            datasets = datasets.map(
-                func,
-                num_proc=train_args.preprocessing_num_workers,
-                load_from_cache_file=True,
-                batched=True,
-                cache_file_names=map_cache_file_name,
-                batch_size=train_args.preprocessing_batch_size,
-                remove_columns=set(sum(datasets.column_names.values(), [])),
-                desc=f"preprocess-{repo_name}",
-                fn_kwargs={"processor": processor, "args": train_args, "config": config},
-            )
-
-            for dataset_key in datasets:
-                process_dataset(datasets[dataset_key], dataset_key, repo_name, truncate_map, filter_cache_file_name)
-
-        train_dataset = concat(train_dataset_ls, "train")
-        valid_dataset = concat(valid_dataset_ls, "valid")
-        test_dataset = concat(test_dataset_ls, "test")
-
-        if train_args.is_world_process_zero:
-            logger.info(f"load_dataset_time: {time.time() - start_time:.2f}")
-
-        return train_dataset, valid_dataset, test_dataset
-
     def compute_metrics(pred: EvalPrediction):
         pred_logits = pred.predictions
         pred_ids = np.argmax(pred_logits, axis=-1)
@@ -375,7 +257,7 @@ def main(train_args: FinetuneCTCArguments) -> None:
     model_kwargs = {"config": config, **train_args.model_kwargs}
     model = AutoModelForCTC.from_pretrained(model_name_or_path, **model_kwargs)
 
-    model.freeze_feature_extractor()
+    model.freeze_feature_encoder()
 
     if train_args.torch_compile:
         model = torch.compile(
@@ -392,7 +274,10 @@ def main(train_args: FinetuneCTCArguments) -> None:
     ):
         # load datasets
         train_dataset, valid_dataset, test_dataset = processing_datasets(
-            PROCESS_FUNC_MAP[train_args.data_preprocessor_type]
+            PROCESSOR_REGISTRY[train_args.data_preprocessor_type],
+            train_args,
+            processor,
+            config,
         )
 
     collator = DataCollatorCTCWithPadding(processor=processor)
@@ -445,6 +330,18 @@ if __name__ == "__main__":
         set_seed(train_args.seed)
 
     if train_args.run_name is not None:
-        setproctitle(train_args.run_name)
+        setproctitle(f"{train_args.run_name}-{train_args.local_process_index}")
+
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    log_level = train_args.get_process_log_level()
+    logger.setLevel(log_level)
+    ds_logging.set_verbosity(log_level)
+    hf_logging.set_verbosity(log_level)
+    hf_logging.enable_default_handler()
+    hf_logging.enable_explicit_format()
 
     main(train_args)
