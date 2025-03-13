@@ -223,14 +223,45 @@ class DataPackingCollatorForWav2Vec2Pretraining(DataCollatorMixin):
 
         return batch.to(self.model.dtype)
 
-    def torch_call(self, feature_ls):
-        if isinstance(feature_ls, list) and isinstance(feature_ls[0], list):
-            if self.do_old_packing:
-                return self._process_old_packing_list(feature_ls)
-            else:
-                return self._process_packing_list(feature_ls)
+    def torch_call(self, features_ls):
+        if isinstance(features_ls, list) and isinstance(features_ls[0], list):
+            # if self.do_old_packing:
+            #     return self._process_old_packing_list(features_ls)
+            # else:
+            #     return self._process_packing_list(features_ls)
+
+            # return {
+            #     "input_values": [feature["input_values"] for features in features_ls for feature in features][:20],
+            #     "position_ids": torch.concat(
+            #         [torch.arange(feature["length"]) for features in features_ls for feature in features][:20]
+            #     ),
+            # }
+            # input_values, mask_time_indices, position_ids, sampled_negative_indices = list(), list(), list(), list()
+            # for features in features_ls:
+            #     for feature in features:
+            #         input_values.append(feature["input_values"])
+            #         mask_time_indices.append(
+            #             _compute_mask_indices(
+            #                 (1, feature["length"]),
+            #                 self.mask_time_prob,
+            #                 self.mask_time_length,
+            #                 min_masks=self.mask_time_min_masks,
+            #             )[0]
+            #         )
+            #         position_ids.append(torch.arange(feature["length"]))
+
+            # max_len = max(len(x) for x in position_ids)
+            # mask_time_indices = np.stack([np.pad(x, (0, max_len - len(x))) for x in mask_time_indices])
+
+            # breakpoint()
+            return {
+                "input_values": [feature["input_values"] for features in features_ls for feature in features],
+                "position_ids": torch.concat(
+                    [torch.arange(feature["length"]) for features in features_ls for feature in features]
+                ),
+            }
         else:
-            return self._process_feature_list(feature_ls)
+            return self._process_feature_list(features_ls)
 
 
 @dataclass
@@ -423,13 +454,17 @@ class ASRPreTrainer(Trainer):
 
         inputs = self._prepare_inputs(inputs)
 
-        sub_attention_mask = inputs.pop("sub_attention_mask", None)
-        sub_attention_mask = (
-            sub_attention_mask if sub_attention_mask is not None else torch.ones_like(inputs["mask_time_indices"])
+        logger.warning_once(
+            "trainer의 427줄에 핵심 코드가 주석처리 되어 있다. wav2vec2에 mask_time_indices 넣어서 개발 복잡도 줄이는 실험이니깐, 실험 끝나고 나면 이거 주석 해재해. sub_attention_mask, mask_time_indices"
         )
-        num_losses = inputs["mask_time_indices"].sum()
+        if "position_ids" not in inputs:
+            sub_attention_mask = inputs.pop("sub_attention_mask", None)
+            sub_attention_mask = (
+                sub_attention_mask if sub_attention_mask is not None else torch.ones_like(inputs["mask_time_indices"])
+            )
+            num_losses = inputs["mask_time_indices"].sum()
 
-        percent_masked = num_losses / sub_attention_mask.sum()
+            percent_masked = num_losses / sub_attention_mask.sum()
 
         if is_sagemaker_mp_enabled():
             # NOTE: sagemaker에선 outputs가 나오질 않음! 참고
@@ -438,6 +473,23 @@ class ASRPreTrainer(Trainer):
 
         with self.compute_loss_context_manager():
             loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+
+        if "position_ids" in inputs:
+            num_losses = sum([x.sum() for x in outputs.mask_time_indices]).to(loss.device)
+            percent_masked = num_losses / sum([torch.ones_like(x).sum() for x in outputs.mask_time_indices]).to(
+                loss.device
+            )
+            # (
+            #     outputs.contrastive_loss.detach(),
+            #     outputs.diversity_loss.detach(),
+            #     outputs.loss.detach(),
+            #     num_losses.detach(),
+            #     percent_masked.detach(),
+            # )
+            # packing에 batch_size가 2일 때
+            # tensor(101.8803, device='cuda:0') tensor(21.4941, device='cuda:0') tensor(104.0297, device='cuda:0') tensor(51, device='cuda:0') tensor(0.0500, device='cuda:0')
+        # no packing에 batch_size가 10일 떄
+        # (tensor(333.4388, device='cuda:0'), tensor(69.6827, device='cuda:0'), tensor(340.4070, device='cuda:0'), tensor(122, device='cuda:0'), tensor(0.0496, device='cuda:0'))
 
         del inputs
         if (
@@ -472,7 +524,7 @@ class ASRPreTrainer(Trainer):
         else:
             # BUG: Accelerate에서 gradient accumulation을 자동 처리하므로 여기서 loss *= gradient_accumulation_steps는
             #      중복 스케일링을 일으킬 수 있습니다.
-            loss *= self.args.gradient_accumulation_steps
+            # loss *= self.args.gradient_accumulation_steps
             self.accelerator.backward(loss)
 
         # NOTE: https://github.com/huggingface/transformers/pull/13877#discussion_r723197919 참고
