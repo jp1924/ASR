@@ -1,4 +1,5 @@
 import warnings
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -87,6 +88,41 @@ def eager_attention_forward(
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attn_weights
+
+
+@dataclass
+class PackWav2Vec2ForPreTrainingOutput(Wav2Vec2ForPreTrainingOutput):
+    """
+    Output type of [`Wav2Vec2ForPreTraining`], with potential hidden states and attentions.
+
+    Args:
+        loss (*optional*, returned when `sample_negative_indices` are passed, `torch.FloatTensor` of shape `(1,)`):
+            Total loss as the sum of the contrastive loss (L_m) and the diversity loss (L_d) as stated in the [official
+            paper](https://arxiv.org/pdf/2006.11477.pdf) . (classification) loss.
+        projected_states (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.proj_codevector_dim)`):
+            Hidden-states of the model projected to *config.proj_codevector_dim* that can be used to predict the masked
+            projected quantized states.
+        projected_quantized_states (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.proj_codevector_dim)`):
+            Quantized extracted feature vectors projected to *config.proj_codevector_dim* representing the positive
+            target vectors for contrastive loss.
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of each layer) of
+            shape `(batch_size, sequence_length, hidden_size)`.
+
+            Hidden-states of the model at the output of each layer plus the initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+        contrastive_loss (*optional*, returned when `sample_negative_indices` are passed, `torch.FloatTensor` of shape `(1,)`):
+            The contrastive loss (L_m) as stated in the [official paper](https://arxiv.org/pdf/2006.11477.pdf) .
+        diversity_loss (*optional*, returned when `sample_negative_indices` are passed, `torch.FloatTensor` of shape `(1,)`):
+            The diversity loss (L_d) as stated in the [official paper](https://arxiv.org/pdf/2006.11477.pdf) .
+    """
+
+    mask_time_indices: Optional[List[torch.BoolTensor]] = None
 
 
 class Wav2Vec2Attention(nn.Module):
@@ -593,7 +629,6 @@ class PackedWav2Vec2Model(Wav2Vec2PreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        batch_input_length = None
         if isinstance(input_values, torch.Tensor):
             extract_features = self.feature_extractor(input_values)
             extract_features = extract_features.transpose(1, 2)
@@ -608,57 +643,42 @@ class PackedWav2Vec2Model(Wav2Vec2PreTrainedModel):
             hidden_states = self._mask_hidden_states(
                 hidden_states, mask_time_indices=mask_time_indices, attention_mask=attention_mask
             )
+            mask_time_indices, sampled_negative_indices = None, None
         elif isinstance(input_values, list):
-            batch_input_length = list()
-            pack_size = mask_time_indices.shape[-1]
-            hidden_states_ls, extract_features_ls = list(), list()
-            for batch_idx, packing_ls in enumerate(input_values):
-                start_idx = 0
+            hidden_states, extract_features = [], []
+            mask_time_indices, sampled_negative_indices = [], []
+            for input_value in input_values:
+                extract_feature = self.feature_extractor(input_value[None])
+                extract_feature = extract_feature.transpose(1, 2)
+                mask_time = _compute_mask_indices(
+                    extract_feature.shape[:-1],
+                    self.config.mask_time_prob,
+                    self.config.mask_time_length,
+                    min_masks=self.config.mask_time_min_masks,
+                )
+                negative_indices = _sample_negative_indices(
+                    mask_time.shape,
+                    self.config.num_negatives,
+                    mask_time_indices=mask_time,
+                )
+                mask_time = torch.tensor(mask_time)
+                negative_indices = torch.tensor(negative_indices)
+                hidden_state, extract_feature = self.feature_projection(extract_feature)
+                hidden_state = self._mask_hidden_states(hidden_state, mask_time)
 
-                input_lengths = list()
-                hidden_states = list()
-                extract_features = list()
-                for input_value in packing_ls:
-                    extract_feature = self.feature_extractor(input_value[None])
-                    extract_feature = extract_feature.transpose(1, 2)
+                # positional encoding
+                position_embeddings = self.encoder.pos_conv_embed(hidden_state)
+                hidden_state = hidden_state + position_embeddings
+                hidden_state = self.encoder.dropout(hidden_state)
 
-                    end_idx = extract_feature.shape[1] + start_idx
+                hidden_states.append(hidden_state)
+                extract_features.append(extract_feature)
 
-                    mask_time = mask_time_indices[batch_idx, start_idx:end_idx][None]
+                mask_time_indices.append(mask_time)
+                sampled_negative_indices.append(negative_indices)
 
-                    hidden_state, extract_feature = self.feature_projection(extract_feature)
-                    hidden_state = self._mask_hidden_states(hidden_state, mask_time)
-
-                    # positional encoding
-                    # position_embeddings = self.encoder.pos_conv_embed(hidden_state)
-                    # hidden_state = hidden_state + position_embeddings
-                    hidden_state = self.encoder.dropout(hidden_state)
-
-                    hidden_states.append(hidden_state)
-                    extract_features.append(extract_feature)
-
-                    start_idx = end_idx
-                    input_lengths.append(extract_feature.shape[1])
-
-                hidden_states = torch.concat(hidden_states, dim=1)
-                extract_features = torch.concat(extract_features, dim=1)
-
-                bsz, seq, hdn = hidden_states.shape
-                pad = torch.zeros((bsz, pack_size - seq, hdn), device=self.device, dtype=self.dtype)
-                hidden_states = torch.concat([hidden_states, pad], dim=1)
-
-                bsz, seq, hdn = extract_features.shape
-                pad = torch.zeros((bsz, pack_size - seq, hdn), device=self.device, dtype=self.dtype)
-                extract_features = torch.concat([extract_features, pad], dim=1)
-
-                hidden_states_ls.append(hidden_states)
-                extract_features_ls.append(extract_features)
-                batch_input_length.append(input_lengths)
-
-            hidden_states = torch.concat(hidden_states_ls, dim=0)
-            extract_features = torch.concat(extract_features_ls, dim=0)
-        else:
-            raise ValueError("input_values must be either a tensor or a list of tensors")
+            hidden_states = torch.cat(hidden_states, dim=1)
+            extract_features = torch.cat(extract_features, dim=1)
 
         encoder_outputs = self.encoder(
             hidden_states,
@@ -674,15 +694,34 @@ class PackedWav2Vec2Model(Wav2Vec2PreTrainedModel):
         if self.adapter is not None:
             hidden_states = self.adapter(hidden_states)
 
-        if not return_dict:
-            return ((hidden_states, extract_features) + encoder_outputs[1:], batch_input_length)
+        if isinstance(input_values, list):
+            if not return_dict:
+                return (
+                    (hidden_states, extract_features) + encoder_outputs[1:],
+                    mask_time_indices,
+                    sampled_negative_indices,
+                )
 
-        return Wav2Vec2BaseModelOutput(
-            last_hidden_state=hidden_states,
-            extract_features=extract_features,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
-        ), batch_input_length
+            return (
+                Wav2Vec2BaseModelOutput(
+                    last_hidden_state=hidden_states,
+                    extract_features=extract_features,
+                    hidden_states=encoder_outputs.hidden_states,
+                    attentions=encoder_outputs.attentions,
+                ),
+                mask_time_indices,
+                sampled_negative_indices,
+            )
+        else:
+            if not return_dict:
+                return (hidden_states, extract_features) + encoder_outputs[1:]
+
+            return Wav2Vec2BaseModelOutput(
+                last_hidden_state=hidden_states,
+                extract_features=extract_features,
+                hidden_states=encoder_outputs.hidden_states,
+                attentions=encoder_outputs.attentions,
+            )
 
 
 class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
@@ -820,15 +859,35 @@ class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
         if mask_time_indices is not None:
             mask_time_indices = mask_time_indices.to(torch.bool)
 
-        outputs, input_lengths_ls = self.wav2vec2(
-            input_values,
-            position_ids=position_ids,
-            attention_mask=attention_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            mask_time_indices=mask_time_indices,
-            return_dict=return_dict,
-        )
+        # import copy
+
+        # input_values_ls = [
+        #     input_value[mask.bool()] for input_value, mask in zip(copy.deepcopy(input_values), attention_mask)
+        # ]
+        # position_ids = torch.concat(
+        #     [torch.arange(self._get_feat_extract_output_lengths(x.shape[0])) for x in input_values_ls]
+        # ).to(self.device)
+
+        if isinstance(input_values, list):
+            outputs, pack_mask_time_indices, pack_sampled_negative_indices = self.wav2vec2(
+                input_values,
+                # input_values_ls,
+                position_ids=position_ids,
+                # attention_mask=attention_mask,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                # mask_time_indices=mask_time_indices,
+                return_dict=return_dict,
+            )
+        else:
+            outputs = self.wav2vec2(
+                input_values,
+                attention_mask=attention_mask,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                mask_time_indices=mask_time_indices,
+                return_dict=return_dict,
+            )
 
         # 1. project all transformed features (including masked) to final vq dim
         transformer_features = self.project_hid(outputs[0])
@@ -842,99 +901,166 @@ class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
                 extract_features.shape[1], attention_mask, add_adapter=False
             )
 
-        if input_lengths_ls:
-            pack_size = mask_time_indices.shape[1]
-            batch_quantized_features = list()
-            codevector_perplexity = torch.tensor(0, device=self.device, dtype=self.dtype)
-            for bsz_idx, (input_lengths, position_id_ls) in enumerate(zip(input_lengths_ls, position_ids)):
-                split_extract_features = extract_features[bsz_idx, position_id_ls != -1].split(input_lengths)
-                quantized_features_ls = list()
-                start_idx = 0
-                for extract_feature in split_extract_features:
-                    end_idx = extract_feature.shape[0] + start_idx
+        if isinstance(input_values, list):
+            split_idx_ls = [x.shape[1] for x in pack_mask_time_indices]
+            split_transformer = transformer_features.split(split_idx_ls, dim=1)
+            quantized_features_ls = list()
+            loss_ls, diversity_loss_ls, contrastive_loss_ls, codevector_perplexity_ls = list(), list(), list(), list()
+            logits_ls, targets_ls, codevector_perplexity_ls = list(), list(), list()
+            import time
 
-                    mask_time_indice = mask_time_indices[bsz_idx, start_idx:end_idx][None]
+            start_time = time.time()
+            for idx, split_features in enumerate(extract_features.split(split_idx_ls, dim=1)):
+                mask_time = pack_mask_time_indices[idx].to(self.device)
+                quantized_feature, codevector_perplexity = self.quantizer(
+                    split_features,
+                    mask_time_indices=mask_time,
+                )
+                quantized_feature = quantized_feature.to(self.project_q.weight.dtype)
+                quantized_feature = self.project_q(quantized_feature)
 
-                    quantized_feature, perplexity = self.quantizer(
-                        extract_feature[None],
-                        mask_time_indices=mask_time_indice,
+                codevector_perplexity_ls.append(codevector_perplexity)
+
+                loss, contrastive_loss, diversity_loss = None, None, None
+                if pack_sampled_negative_indices is not None:
+                    batch_size, sequence_length, hidden_size = quantized_feature.shape
+
+                    # for training, we sample negatives
+                    # 3. sample K negatives (distractors) quantized states for contrastive loss
+                    # if attention_mask is passed, make sure that padded feature vectors cannot be sampled
+                    # sample negative quantized vectors BTC => (BxT)C
+                    negative_quantized_features = quantized_feature.view(-1, hidden_size)[
+                        pack_sampled_negative_indices[idx].long().view(-1)
+                    ]
+                    negative_quantized_features = negative_quantized_features.view(
+                        batch_size, sequence_length, -1, hidden_size
+                    ).permute(2, 0, 1, 3)
+
+                    # 4. compute logits, corresponding to `logs = sim(c_t, [q_t, \sim{q}_t]) / \kappa`
+                    # of equation (3) in https://arxiv.org/pdf/2006.11477.pdf
+                    logits = self.compute_contrastive_logits(
+                        quantized_feature[None, :],
+                        negative_quantized_features,
+                        split_transformer[idx],
+                        self.config.contrastive_logits_temperature,
                     )
 
-                    start_idx = end_idx
+                    # 5. if a negative vector is identical to the positive (i.e. when codebook utilization is low),
+                    # its cosine similarity will be masked
+                    neg_is_pos = (quantized_feature == negative_quantized_features).all(-1)
 
-                    codevector_perplexity += perplexity
-                    quantized_features_ls.append(quantized_feature)
+                    if neg_is_pos.any():
+                        logits[1:][neg_is_pos] = float("-inf")
 
-                quantized_features = torch.concat(quantized_features_ls, dim=1)
+                    # 6. compute contrastive loss \mathbf{L}_m = cross_entropy(logs) =
+                    # -log(exp(sim(c_t, q_t)/\kappa) / \sum_{\sim{q}} exp(sim(c_t, \sim{q})/\kappa))
+                    logits = logits.transpose(0, 2).reshape(-1, logits.size(0))
+                    target = ((1 - mask_time.long()) * -100).transpose(0, 1).flatten()
 
-                bsz, seq, hdn = quantized_features.shape
-                pad = torch.zeros((bsz, pack_size - seq, hdn), device=self.device, dtype=self.dtype)
-                quantized_features = torch.concat([quantized_features, pad], dim=1)
+                    logits_ls.append(logits)
+                    targets_ls.append(target)
+                    codevector_perplexity_ls.append(codevector_perplexity)
 
-                batch_quantized_features.append(quantized_features)
+                    # contrastive_loss = nn.functional.cross_entropy(logits.float(), target, reduction="sum")
+                    # # 7. compute diversity loss: \mathbf{L}_d
+                    # num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
+                    # diversity_loss = ((num_codevectors - codevector_perplexity) / num_codevectors) * mask_time.sum()
 
-            codevector_perplexity = codevector_perplexity / extract_features.shape[0]
-            quantized_features = torch.concat(batch_quantized_features, dim=0)
+                    # # 8. \mathbf{L} = \mathbf{L}_m + \alpha * \mathbf{L}_d
+                    # loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
+
+                    # diversity_loss_ls.append(diversity_loss)
+                    # loss_ls.append(loss)
+                    # contrastive_loss_ls.append(contrastive_loss)
+                    # codevector_perplexity_ls.append(codevector_perplexity)
+
+                quantized_features_ls.append(quantized_feature)
+            end_time = time.time()
+            final_logits = torch.concat(logits_ls).float()
+            final_targets = torch.concat(targets_ls)
+
+            contrastive_loss = nn.functional.cross_entropy(final_logits, final_targets, reduction="sum")
+            codevector_perplexity = sum(
+                [codevector_perplexity_ls[idx] / x.sum() for idx, x in enumerate(pack_mask_time_indices)]
+            )
+
+            num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
+            diversity_loss = ((num_codevectors - codevector_perplexity) / num_codevectors) * sum(
+                [x.sum() for x in pack_mask_time_indices]
+            )
+
+            loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
+
+            quantized_features = torch.concat(quantized_features_ls, dim=1)
         else:
+            start_time = time.time()
             quantized_features, codevector_perplexity = self.quantizer(
                 extract_features,
                 mask_time_indices=mask_time_indices,
             )
-        # if bool(torch.isinf(perplexity)) or bool(torch.isnan(codevector_perplexity)):
-        #     breakpoint()
-        quantized_features = quantized_features.to(self.project_q.weight.dtype)
-        quantized_features = self.project_q(quantized_features)
 
-        loss, contrastive_loss, diversity_loss = None, None, None
-        if sampled_negative_indices is not None:
-            batch_size, sequence_length, hidden_size = quantized_features.shape
+            quantized_features = quantized_features.to(self.project_q.weight.dtype)
+            quantized_features = self.project_q(quantized_features)
 
-            # for training, we sample negatives
-            # 3. sample K negatives (distractors) quantized states for contrastive loss
-            # if attention_mask is passed, make sure that padded feature vectors cannot be sampled
-            # sample negative quantized vectors BTC => (BxT)C
-            negative_quantized_features = quantized_features.view(-1, hidden_size)[
-                sampled_negative_indices.long().view(-1)
-            ]
-            negative_quantized_features = negative_quantized_features.view(
-                batch_size, sequence_length, -1, hidden_size
-            ).permute(2, 0, 1, 3)
+            loss, contrastive_loss, diversity_loss = None, None, None
+            if sampled_negative_indices is not None:
+                batch_size, sequence_length, hidden_size = quantized_features.shape
 
-            # 4. compute logits, corresponding to `logs = sim(c_t, [q_t, \sim{q}_t]) / \kappa`
-            # of equation (3) in https://arxiv.org/pdf/2006.11477.pdf
-            logits = self.compute_contrastive_logits(
-                quantized_features[None, :],
-                negative_quantized_features,
-                transformer_features,
-                self.config.contrastive_logits_temperature,
-            )
+                # for training, we sample negatives
+                # 3. sample K negatives (distractors) quantized states for contrastive loss
+                # if attention_mask is passed, make sure that padded feature vectors cannot be sampled
+                # sample negative quantized vectors BTC => (BxT)C
+                negative_quantized_features = quantized_features.view(-1, hidden_size)[
+                    sampled_negative_indices.long().view(-1)
+                ]
+                negative_quantized_features = negative_quantized_features.view(
+                    batch_size, sequence_length, -1, hidden_size
+                ).permute(2, 0, 1, 3)
 
-            # 5. if a negative vector is identical to the positive (i.e. when codebook utilization is low),
-            # its cosine similarity will be masked
-            neg_is_pos = (quantized_features == negative_quantized_features).all(-1)
+                # 4. compute logits, corresponding to `logs = sim(c_t, [q_t, \sim{q}_t]) / \kappa`
+                # of equation (3) in https://arxiv.org/pdf/2006.11477.pdf
+                logits = self.compute_contrastive_logits(
+                    quantized_features[None, :],
+                    negative_quantized_features,
+                    transformer_features,
+                    self.config.contrastive_logits_temperature,
+                )
 
-            if neg_is_pos.any():
-                logits[1:][neg_is_pos] = float("-inf")
+                # 5. if a negative vector is identical to the positive (i.e. when codebook utilization is low),
+                # its cosine similarity will be masked
+                neg_is_pos = (quantized_features == negative_quantized_features).all(-1)
 
-            # 6. compute contrastive loss \mathbf{L}_m = cross_entropy(logs) =
-            # -log(exp(sim(c_t, q_t)/\kappa) / \sum_{\sim{q}} exp(sim(c_t, \sim{q})/\kappa))
-            logits = logits.transpose(0, 2).reshape(-1, logits.size(0))
-            target = ((1 - mask_time_indices.long()) * -100).transpose(0, 1).flatten()
+                if neg_is_pos.any():
+                    logits[1:][neg_is_pos] = float("-inf")
 
-            contrastive_loss = nn.functional.cross_entropy(logits.float(), target, reduction="sum")
-            # 7. compute diversity loss: \mathbf{L}_d
-            num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
-            diversity_loss = ((num_codevectors - codevector_perplexity) / num_codevectors) * mask_time_indices.sum()
+                # 6. compute contrastive loss \mathbf{L}_m = cross_entropy(logs) =
+                # -log(exp(sim(c_t, q_t)/\kappa) / \sum_{\sim{q}} exp(sim(c_t, \sim{q})/\kappa))
+                logits = logits.transpose(0, 2).reshape(-1, logits.size(0))
+                target = ((1 - mask_time_indices.long()) * -100).transpose(0, 1).flatten()
 
-            # 8. \mathbf{L} = \mathbf{L}_m + \alpha * \mathbf{L}_d
-            loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
+                contrastive_loss = nn.functional.cross_entropy(logits.float(), target, reduction="sum")
+                # 7. compute diversity loss: \mathbf{L}_d
+                num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
+                diversity_loss = (
+                    (num_codevectors - codevector_perplexity) / num_codevectors
+                ) * mask_time_indices.sum()
+
+                # 8. \mathbf{L} = \mathbf{L}_m + \alpha * \mathbf{L}_d
+                loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
+            end_time = time.time()
 
         if not return_dict:
             if loss is not None:
                 return (loss, transformer_features, quantized_features, codevector_perplexity) + outputs[2:]
             return (transformer_features, quantized_features, codevector_perplexity) + outputs[2:]
+            # no pack, bsz: 10
+            # print(loss, contrastive_loss, diversity_loss, codevector_perplexity)
+            # tensor(237.2548, device='cuda:1', grad_fn=<AddBackward0>) tensor(232.3723, device='cuda:1', grad_fn=<NllLossBackward0>) tensor(48.8255, device='cuda:1', grad_fn=<MulBackward0>) tensor(15.0337, device='cuda:1', grad_fn=<SumBackward0>)
 
-        return Wav2Vec2ForPreTrainingOutput(
+            # print(contrastive_loss)
+            # tensor(232.3723, device='cuda:1', grad_fn=<NllLossBackward0>)
+
+        return PackWav2Vec2ForPreTrainingOutput(
             loss=loss,
             projected_states=transformer_features,
             projected_quantized_states=quantized_features,
@@ -943,6 +1069,7 @@ class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
             attentions=outputs.attentions,
             contrastive_loss=contrastive_loss,
             diversity_loss=diversity_loss,
+            mask_time_indices=pack_mask_time_indices if isinstance(input_values, list) else None,
         )
 
     def estimate_tokens(self, input_dict: Dict[str, Union[torch.Tensor, Any]]) -> int:
@@ -955,21 +1082,21 @@ class PackedWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
         Returns:
             `int`: The total number of tokens.
         """
-        if not hasattr(self, "warnings_issued"):
-            self.warnings_issued = {}
-        if self.main_input_name in input_dict and isinstance(input_dict[self.main_input_name], list):
-            return sum(
-                [
-                    self._get_feat_extract_output_lengths(x.shape[0])
-                    for y in input_dict[self.main_input_name]
-                    for x in y
-                ]
-            )  # noqa
-        elif self.main_input_name in input_dict and isinstance(input_dict[self.main_input_name], torch.Tensor):
-            return input_dict[self.main_input_name].numel()
-        elif "estimate_tokens" not in self.warnings_issued:
-            logger.warning(
-                "Could not estimate the number of tokens of the input, floating-point operations will not be computed"
-            )
-            self.warnings_issued["estimate_tokens"] = True
+        # if not hasattr(self, "warnings_issued"):
+        #     self.warnings_issued = {}
+        # if self.main_input_name in input_dict and isinstance(input_dict[self.main_input_name], list):
+        #     return sum(
+        #         [
+        #             self._get_feat_extract_output_lengths(x.shape[0])
+        #             for y in input_dict[self.main_input_name]
+        #             for x in y
+        #         ]
+        #     )  # noqa
+        # elif self.main_input_name in input_dict and isinstance(input_dict[self.main_input_name], torch.Tensor):
+        #     return input_dict[self.main_input_name].numel()
+        # elif "estimate_tokens" not in self.warnings_issued:
+        #     logger.warning(
+        #         "Could not estimate the number of tokens of the input, floating-point operations will not be computed"
+        #     )
+        #     self.warnings_issued["estimate_tokens"] = True
         return 0
